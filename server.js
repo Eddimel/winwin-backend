@@ -12,6 +12,9 @@ const app = express()
 app.use(express.json())
 app.use(cookieParser())
 
+// ========================================
+// CORS — PRODUCTION READY
+// ========================================
 app.use(
   cors({
     origin: true,
@@ -33,6 +36,7 @@ app.get("/health", async (req, res) => {
 
 // ===============================
 // PHASE 2 — PROTECTED CATALOGUE
+// (TEMP no auth for testing)
 // ===============================
 app.get("/api/catalogue", async (req, res) => {
   try {
@@ -68,85 +72,6 @@ app.get("/api/catalogue", async (req, res) => {
   }
 })
 
-// ===============================
-// ORDER VALIDATION
-// ===============================
-app.post("/api/catalogue/validate-order", requireAuth, async (req, res) => {
-  try {
-    const { items } = req.body
-
-    if (!Array.isArray(items) || items.length === 0)
-      return res.status(400).json({
-        success: false,
-        error: "Items array required"
-      })
-
-    const validated = []
-
-    for (const item of items) {
-
-      const product = await prisma.product.findUnique({
-        where: { sku: item.sku }
-      })
-
-      if (!product || !product.isActive)
-        return res.status(404).json({
-          success: false,
-          error: `Product ${item.sku} not available`
-        })
-
-      if (item.quantity < product.moq)
-        return res.status(400).json({
-          success: false,
-          error: `Minimum order quantity for ${item.sku} is ${product.moq}`
-        })
-
-      if (product.quantityMax && item.quantity > product.quantityMax)
-        return res.status(400).json({
-          success: false,
-          error: `Maximum allowed quantity for ${item.sku} is ${product.quantityMax}`
-        })
-
-      if (product.stock === 0)
-        return res.status(400).json({
-          success: false,
-          error: `Product ${item.sku} is currently unavailable`
-        })
-
-      let approvedQuantity = item.quantity
-      let adjusted = false
-
-      if (item.quantity > product.stock) {
-        approvedQuantity = product.stock
-        adjusted = true
-      }
-
-      validated.push({
-        productId: product.id,
-        sku: product.sku,
-        requestedQuantity: item.quantity,
-        approvedQuantity,
-        adjusted
-      })
-    }
-
-    res.json({
-      success: true,
-      validated
-    })
-
-  } catch (error) {
-    console.error(error)
-    res.status(500).json({
-      success: false,
-      error: "Internal server error"
-    })
-  }
-})
-
-// ===============================
-// START SERVER
-// ===============================
 const PORT = process.env.PORT || 4000
 
 app.listen(PORT, () => {
