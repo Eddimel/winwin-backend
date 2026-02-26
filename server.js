@@ -1,78 +1,57 @@
-import dotenv from "dotenv"
-import express from "express"
-import cors from "cors"
-import cookieParser from "cookie-parser"
-import { prisma } from "./lib/prisma.js"
-import { requireAuth } from "./middleware/requireAuth.js"
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import dotenv from "dotenv";
+import { PrismaClient } from "@prisma/client";
 
-dotenv.config()
+dotenv.config();
 
-const app = express()
+const app = express();
+const prisma = new PrismaClient();
 
-app.use(express.json())
-app.use(cookieParser())
+app.use(express.json());
 
-// ========================================
-// CORS — PRODUCTION READY
-// ========================================
+app.use(
+  helmet({
+    frameguard: false, // IMPORTANT pour Shopify iframe
+  })
+);
+
 app.use(
   cors({
     origin: true,
     credentials: true,
   })
-)
+);
 
-// ===============================
-// HEALTH CHECK
-// ===============================
+const PORT = process.env.PORT || 4000;
+
 app.get("/health", async (req, res) => {
   try {
-    await prisma.$queryRaw`SELECT 1`
-    res.json({ status: "OK", database: "connected" })
-  } catch {
-    res.status(500).json({ status: "ERROR", database: "not connected" })
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: "OK", database: "connected" });
+  } catch (error) {
+    res.status(500).json({ status: "ERROR", database: "disconnected" });
   }
-})
+});
 
-// ===============================
-// PHASE 2 — PROTECTED CATALOGUE
-// ===============================
-app.get("/api/catalogue", requireAuth, async (req, res) => {
+app.get("/api/catalogue", async (req, res) => {
   try {
     const products = await prisma.product.findMany({
-      where: { isActive: true },
-      select: {
-        id: true,
-        name: true,
-        sku: true,
-        description: true,
-        stock: true,
-        moq: true,
-        quantityMax: true,
-        createdAt: true
-      },
-      orderBy: {
-        createdAt: "desc"
-      }
-    })
+      orderBy: { createdAt: "desc" },
+    });
 
     res.json({
       success: true,
       count: products.length,
-      catalogue: products
-    })
-
+      catalogue: products,
+    });
   } catch (error) {
-    console.error(error)
-    res.status(500).json({
-      success: false,
-      error: "Internal server error"
-    })
+    console.error(error);
+    res.status(500).json({ success: false });
   }
-})
-
-const PORT = process.env.PORT || 4000
+});
 
 app.listen(PORT, () => {
-  console.log(`Backend running on port ${PORT}`)
-})
+  console.log(`Backend running on port ${PORT}`);
+});
