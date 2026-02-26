@@ -36,9 +36,8 @@ app.get("/health", async (req, res) => {
 
 // ===============================
 // PHASE 2 — PROTECTED CATALOGUE
-// (TEMP no auth for testing)
 // ===============================
-app.get("/api/catalogue", async (req, res) => {
+app.get("/api/catalogue", requireAuth, async (req, res) => {
   try {
     const products = await prisma.product.findMany({
       where: { isActive: true },
