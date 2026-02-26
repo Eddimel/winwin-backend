@@ -14,7 +14,7 @@ app.use(cookieParser())
 
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: true,
     credentials: true,
   })
 )
@@ -69,12 +69,11 @@ app.get("/api/catalogue", requireAuth, async (req, res) => {
 })
 
 // ===============================
-// ORDER VALIDATION (PHASE 2 BASE)
+// ORDER VALIDATION
 // ===============================
 app.post("/api/catalogue/validate-order", requireAuth, async (req, res) => {
   try {
     const { items } = req.body
-    const customerId = req.customer.id
 
     if (!Array.isArray(items) || items.length === 0)
       return res.status(400).json({
@@ -146,83 +145,10 @@ app.post("/api/catalogue/validate-order", requireAuth, async (req, res) => {
 })
 
 // ===============================
-// LIST MY DRAFT ORDERS
+// START SERVER
 // ===============================
-app.get("/api/orders", requireAuth, async (req, res) => {
-  try {
-    const drafts = await prisma.orderDraft.findMany({
-      where: {
-        customerId: req.customer.id
-      },
-      include: {
-        items: true
-      },
-      orderBy: {
-        createdAt: "desc"
-      }
-    })
-
-    res.json({
-      success: true,
-      count: drafts.length,
-      drafts
-    })
-
-  } catch {
-    res.status(500).json({
-      success: false,
-      error: "Internal server error"
-    })
-  }
-})
-
-// ===============================
-// CONFIRM DRAFT ORDER
-// ===============================
-app.post("/api/orders/:id/confirm", requireAuth, async (req, res) => {
-  try {
-    const draftId = req.params.id
-
-    const draft = await prisma.orderDraft.findFirst({
-      where: {
-        id: draftId,
-        customerId: req.customer.id
-      }
-    })
-
-    if (!draft)
-      return res.status(404).json({
-        success: false,
-        error: "Draft not found"
-      })
-
-    if (draft.status !== "PENDING")
-      return res.status(400).json({
-        success: false,
-        error: "Draft already processed"
-      })
-
-    await prisma.orderDraft.update({
-      where: { id: draftId },
-      data: { status: "CONFIRMED" }
-    })
-
-    res.json({
-      success: true,
-      message: "Order confirmed",
-      draftId
-    })
-
-  } catch {
-    res.status(500).json({
-      success: false,
-      error: "Internal server error"
-    })
-  }
-})
-
-const PORT = 4000
+const PORT = process.env.PORT || 4000
 
 app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`)
+  console.log(`Backend running on port ${PORT}`)
 })
