@@ -2,16 +2,16 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import dotenv from "dotenv";
-import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@prisma/client";
+import cookieParser from "cookie-parser";
+import { requireAuth } from "./middleware/requireAuth.js";
 
 dotenv.config();
 
-const app = express();
-
 if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL is missing in environment variables");
+  throw new Error("DATABASE_URL is missing");
 }
 
 const pool = new Pool({
@@ -24,7 +24,10 @@ const prisma = new PrismaClient({
   adapter,
 });
 
+const app = express();
+
 app.use(express.json());
+app.use(cookieParser());
 
 app.use(
   helmet({
@@ -47,11 +50,12 @@ app.get("/health", async (req, res) => {
     res.json({ status: "OK", database: "connected" });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ status: "ERROR", database: "disconnected" });
+    res.status(500).json({ status: "ERROR" });
   }
 });
 
-app.get("/api/catalogue", async (req, res) => {
+// 🔒 PROTECTED CATALOGUE
+app.get("/api/catalogue", requireAuth, async (req, res) => {
   try {
     const products = await prisma.product.findMany({
       orderBy: { createdAt: "desc" },
