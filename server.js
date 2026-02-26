@@ -3,17 +3,32 @@ import cors from "cors";
 import helmet from "helmet";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
+import { Pool } from "pg";
+import { PrismaPg } from "@prisma/adapter-pg";
 
 dotenv.config();
 
 const app = express();
-const prisma = new PrismaClient();
+
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL is missing in environment variables");
+}
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+const adapter = new PrismaPg(pool);
+
+const prisma = new PrismaClient({
+  adapter,
+});
 
 app.use(express.json());
 
 app.use(
   helmet({
-    frameguard: false, // IMPORTANT pour Shopify iframe
+    frameguard: false,
   })
 );
 
@@ -31,6 +46,7 @@ app.get("/health", async (req, res) => {
     await prisma.$queryRaw`SELECT 1`;
     res.json({ status: "OK", database: "connected" });
   } catch (error) {
+    console.error(error);
     res.status(500).json({ status: "ERROR", database: "disconnected" });
   }
 });
