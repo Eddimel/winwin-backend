@@ -13,9 +13,14 @@ const app = express()
 app.use(express.json())
 app.use(cookieParser())
 
+/*
+  DEV MODE CORS (Shopify Embedded compatible)
+  - origin: true → reflète dynamiquement l'origine entrante
+  - credentials: true → autorise cookie cross-site
+*/
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL,
+    origin: true,
     credentials: true,
   })
 )
