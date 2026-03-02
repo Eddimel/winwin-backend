@@ -13,43 +13,81 @@ const app = express()
 app.use(express.json())
 app.use(cookieParser())
 
-/*
-  DEV MODE CORS (Shopify Embedded compatible)
-  - origin: true → reflète dynamiquement l'origine entrante
-  - credentials: true → autorise cookie cross-site
-*/
+const allowedOrigins = [
+  "https://winwin.ovh",
+  "http://localhost:5173",
+  "https://admin.shopify.com"
+]
+
 app.use(
   cors({
-    origin: true,
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true)
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true)
+      }
+      return callback(new Error("Not allowed by CORS"))
+    },
     credentials: true,
   })
 )
 
-/* ===============================
-   HEALTH CHECK
-================================ */
+/* =====================================================
+   INTERNAL SHOPIFY INSTALL SYNC (SECURE)
+===================================================== */
 
+app.post("/internal/shopify/install", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+
+    if (!authHeader || authHeader !== `Bearer ${process.env.INTERNAL_SYNC_SECRET}`) {
+      return res.status(401).json({ error: "Unauthorized" })
+    }
+
+    const { shop, accessToken, refreshToken, scope } = req.body
+
+    if (!shop || !accessToken) {
+      return res.status(400).json({ error: "Missing required fields" })
+    }
+
+    await prisma.shop.upsert({
+      where: { shop },
+      update: {
+        accessToken,
+        refreshToken,
+        scope,
+      },
+      create: {
+        shop,
+        accessToken,
+        refreshToken,
+        scope,
+        isApproved: false,
+      },
+    })
+
+    return res.status(200).json({ success: true })
+  } catch (error) {
+    console.error("Internal Shopify install sync error:", error)
+    return res.status(500).json({ error: "Internal server error" })
+  }
+})
+
+/* HEALTH */
 app.get("/health", async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`
     res.json({ status: "OK", database: "connected" })
   } catch (error) {
-    console.error("HEALTH ERROR:", error)
     res.status(500).json({ status: "ERROR", database: "not connected" })
   }
 })
 
-/* ===============================
-   REQUEST OTP
-================================ */
-
+/* REQUEST OTP */
 app.post("/auth/request-otp", async (req, res) => {
   try {
     const { phone } = req.body
-
-    if (!phone) {
-      return res.status(400).json({ error: "Phone is required" })
-    }
+    if (!phone) return res.status(400).json({ error: "Phone is required" })
 
     let customer = await prisma.customer.findUnique({
       where: { phone },
@@ -67,27 +105,11 @@ app.post("/auth/request-otp", async (req, res) => {
       })
     }
 
-    if (
-      customer.security?.lockedUntil &&
-      customer.security.lockedUntil > new Date()
-    ) {
-      return res.status(429).json({
-        error: "Account locked. Try again later."
-      })
-    }
-
     const otp = crypto.randomInt(100000, 999999).toString()
-
-    const hashedOtp = crypto
-      .createHash("sha256")
-      .update(otp)
-      .digest("hex")
-
+    const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex")
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
 
-    await prisma.otpCode.deleteMany({
-      where: { customerId: customer.id }
-    })
+    await prisma.otpCode.deleteMany({ where: { customerId: customer.id } })
 
     await prisma.otpCode.create({
       data: {
@@ -101,142 +123,90 @@ app.post("/auth/request-otp", async (req, res) => {
 
     res.json({ message: "OTP sent" })
 
-  } catch (error) {
-    console.error("REQUEST OTP ERROR:", error)
+  } catch {
     res.status(500).json({ error: "Server error" })
   }
 })
 
-/* ===============================
-   VERIFY OTP
-================================ */
-
+/* VERIFY OTP */
 app.post("/auth/verify-otp", async (req, res) => {
   try {
     const { phone, otp } = req.body
-
-    if (!phone || !otp) {
+    if (!phone || !otp)
       return res.status(400).json({ error: "Phone and OTP required" })
-    }
 
     const customer = await prisma.customer.findUnique({
       where: { phone },
       include: { security: true }
     })
 
-    if (!customer) {
+    if (!customer)
       return res.status(400).json({ error: "Customer not found" })
-    }
 
     const otpRecord = await prisma.otpCode.findFirst({
       where: { customerId: customer.id }
     })
 
-    if (!otpRecord || otpRecord.expiresAt < new Date()) {
+    if (!otpRecord || otpRecord.expiresAt < new Date())
       return res.status(400).json({ error: "OTP invalid or expired" })
-    }
 
-    const hashedInput = crypto
-      .createHash("sha256")
-      .update(otp)
-      .digest("hex")
+    const hashedInput = crypto.createHash("sha256").update(otp).digest("hex")
 
-    if (hashedInput !== otpRecord.code) {
+    if (hashedInput !== otpRecord.code)
       return res.status(400).json({ error: "Invalid OTP" })
-    }
 
-    await prisma.otpCode.deleteMany({
-      where: { customerId: customer.id }
-    })
-
-    const deviceHash = crypto.randomBytes(32).toString("hex")
+    await prisma.otpCode.deleteMany({ where: { customerId: customer.id } })
 
     const newSession = await prisma.customerSession.create({
       data: {
         customerId: customer.id,
         isActive: true,
-        deviceHash
+        deviceHash: crypto.randomBytes(32).toString("hex")
       }
-    })
-
-    await prisma.customerSession.updateMany({
-      where: {
-        customerId: customer.id,
-        id: { not: newSession.id }
-      },
-      data: { isActive: false }
     })
 
     res.cookie("session_id", newSession.id, {
       httpOnly: true,
-      secure: true,
-      sameSite: "none",
+      secure: process.env.NODE_ENV === "production",
+      sameSite:
+        process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000
     })
 
     res.json({ message: "Authenticated" })
 
-  } catch (error) {
-    console.error("VERIFY OTP ERROR:", error)
+  } catch {
     res.status(500).json({ error: "Server error" })
   }
 })
 
-/* ===============================
-   LOGOUT
-================================ */
-
+/* LOGOUT */
 app.post("/auth/logout", requireAuth, async (req, res) => {
   await prisma.customerSession.update({
     where: { id: req.session.id },
     data: { isActive: false }
   })
 
-  res.clearCookie("session_id", {
-    httpOnly: true,
-    secure: true,
-    sameSite: "none"
-  })
+  res.clearCookie("session_id")
 
   res.json({ message: "Logout successful" })
 })
 
-/* ===============================
-   SECURE USER INFO
-================================ */
-
+/* ME */
 app.get("/api/me", requireAuth, (req, res) => {
   res.json({ customer: req.customer })
 })
 
-/* ===============================
-   SECURE CATALOGUE (ENTERPRISE CLEAN)
-================================ */
-
+/* CATALOGUE */
 app.get("/api/catalogue", requireAuth, async (req, res) => {
-  try {
-    const products = await prisma.product.findMany({
-      where: { isActive: true }
-    })
+  const products = await prisma.product.findMany({
+    where: { isActive: true }
+  })
 
-    res.status(200).json({
-      success: true,
-      data: {
-        catalogue: products,
-        count: products.length
-      },
-      error: null
-    })
-
-  } catch (error) {
-    console.error("CATALOGUE ERROR:", error)
-
-    res.status(500).json({
-      success: false,
-      data: null,
-      error: "Internal server error"
-    })
-  }
+  res.json({
+    success: true,
+    data: { catalogue: products }
+  })
 })
 
 const PORT = process.env.PORT || 4000
