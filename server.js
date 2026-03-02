@@ -18,10 +18,9 @@ app.use(cookieParser())
 ===================================================== */
 
 const allowedOrigins = [
+  "https://app.winwin.ovh",
   "https://winwin.ovh",
-  "http://localhost:5173",
-  "https://admin.shopify.com",
-  "https://winwin-rail-app-production.up.railway.app"
+  "http://localhost:5173"
 ]
 
 app.use(
