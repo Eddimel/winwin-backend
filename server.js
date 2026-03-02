@@ -13,20 +13,29 @@ const app = express()
 app.use(express.json())
 app.use(cookieParser())
 
+/* =====================================================
+   CORS CONFIGURATION (FIXED & PRODUCTION SAFE)
+===================================================== */
+
 const allowedOrigins = [
   "https://winwin.ovh",
   "http://localhost:5173",
-  "https://admin.shopify.com"
+  "https://admin.shopify.com",
+  "https://winwin-rail-app-production.up.railway.app"
 ]
 
 app.use(
   cors({
     origin: function (origin, callback) {
+      // Allow server-to-server or Postman calls
       if (!origin) return callback(null, true)
+
       if (allowedOrigins.includes(origin)) {
         return callback(null, true)
       }
-      return callback(new Error("Not allowed by CORS"))
+
+      console.warn("Blocked by CORS:", origin)
+      return callback(null, false) // DO NOT throw error
     },
     credentials: true,
   })
@@ -168,8 +177,7 @@ app.post("/auth/verify-otp", async (req, res) => {
     res.cookie("session_id", newSession.id, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite:
-        process.env.NODE_ENV === "production" ? "none" : "lax",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000
     })
 
@@ -188,7 +196,6 @@ app.post("/auth/logout", requireAuth, async (req, res) => {
   })
 
   res.clearCookie("session_id")
-
   res.json({ message: "Logout successful" })
 })
 
