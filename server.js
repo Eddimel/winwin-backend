@@ -49,7 +49,10 @@ app.get("/health", async (req, res) => {
   }
 })
 
-/* REQUEST OTP */
+/* =====================================================
+   AUTH SYSTEM (OTP)
+===================================================== */
+
 app.post("/auth/request-otp", async (req, res) => {
   try {
     const { phone } = req.body
@@ -86,7 +89,6 @@ app.post("/auth/request-otp", async (req, res) => {
     })
 
     console.log("DEV OTP:", otp)
-
     res.json({ message: "OTP sent" })
 
   } catch {
@@ -94,7 +96,6 @@ app.post("/auth/request-otp", async (req, res) => {
   }
 })
 
-/* VERIFY OTP */
 app.post("/auth/verify-otp", async (req, res) => {
   try {
     const { phone, otp } = req.body
@@ -158,7 +159,10 @@ app.post("/auth/verify-otp", async (req, res) => {
   }
 })
 
-/* LOGOUT */
+/* =====================================================
+   SESSION ROUTES
+===================================================== */
+
 app.post("/auth/logout", requireAuth, async (req, res) => {
   await prisma.customerSession.update({
     where: { id: req.session.id },
@@ -169,12 +173,10 @@ app.post("/auth/logout", requireAuth, async (req, res) => {
   res.json({ message: "Logout successful" })
 })
 
-/* ME */
 app.get("/api/me", requireAuth, (req, res) => {
   res.json({ customer: req.customer })
 })
 
-/* CATALOGUE */
 app.get("/api/catalogue", requireAuth, async (req, res) => {
   const products = await prisma.product.findMany({
     where: { isActive: true }
@@ -187,10 +189,9 @@ app.get("/api/catalogue", requireAuth, async (req, res) => {
 })
 
 /* =====================================================
-   SHOPIFY OAUTH 2026
+   SHOPIFY OAUTH 2026 (PRODUCTION SAFE)
 ===================================================== */
 
-/* STEP 1 — START OAUTH */
 app.get("/auth/shopify", (req, res) => {
   const shop = req.query.shop
 
@@ -210,7 +211,6 @@ app.get("/auth/shopify", (req, res) => {
   return res.redirect(installUrl)
 })
 
-/* STEP 2 — CALLBACK */
 app.get("/auth/shopify/callback", async (req, res) => {
   const { shop, code } = req.query
 
@@ -223,9 +223,7 @@ app.get("/auth/shopify/callback", async (req, res) => {
       `https://${shop}/admin/oauth/access_token`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           client_id: process.env.SHOPIFY_CLIENT_ID,
           client_secret: process.env.SHOPIFY_CLIENT_SECRET,
@@ -236,16 +234,34 @@ app.get("/auth/shopify/callback", async (req, res) => {
 
     const data = await response.json()
 
-    const accessToken = data.access_token
+    if (!data.access_token) {
+      console.error("Token exchange failed:", data)
+      return res.status(500).send("OAuth token exchange failed")
+    }
 
-    console.log("SHOPIFY ACCESS TOKEN:", accessToken)
+    await prisma.shop.upsert({
+      where: { shop },
+      update: {
+        accessToken: data.access_token,
+        scope: data.scope,
+      },
+      create: {
+        shop,
+        accessToken: data.access_token,
+        scope: data.scope,
+        isApproved: false,
+      },
+    })
 
-    return res.send("Shopify OAuth success")
+    console.log("Shop installed & token stored:", shop)
+
+    return res.send("Shopify OAuth success & token stored")
   } catch (error) {
-    console.error(error)
+    console.error("OAuth callback error:", error)
     return res.status(500).send("OAuth failed")
   }
 })
+
 const PORT = process.env.PORT || 4000
 
 app.listen(PORT, () => {
