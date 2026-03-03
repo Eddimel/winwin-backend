@@ -5,6 +5,7 @@ import cookieParser from "cookie-parser"
 import crypto from "crypto"
 import { prisma } from "./lib/prisma.js"
 import { requireAuth } from "./middleware/requireAuth.js"
+import fetch from "node-fetch"
 
 dotenv.config()
 console.log("ENV CHECK:", process.env.NODE_ENV)
@@ -185,6 +186,66 @@ app.get("/api/catalogue", requireAuth, async (req, res) => {
   })
 })
 
+/* =====================================================
+   SHOPIFY OAUTH 2026
+===================================================== */
+
+/* STEP 1 — START OAUTH */
+app.get("/auth/shopify", (req, res) => {
+  const shop = req.query.shop
+
+  if (!shop) {
+    return res.status(400).send("Missing shop parameter")
+  }
+
+  const state = crypto.randomBytes(16).toString("hex")
+
+  const installUrl =
+    `https://${shop}/admin/oauth/authorize` +
+    `?client_id=${process.env.SHOPIFY_CLIENT_ID}` +
+    `&scope=${process.env.SHOPIFY_SCOPES}` +
+    `&redirect_uri=${process.env.SHOPIFY_REDIRECT_URI}` +
+    `&state=${state}`
+
+  return res.redirect(installUrl)
+})
+
+/* STEP 2 — CALLBACK */
+app.get("/auth/shopify/callback", async (req, res) => {
+  const { shop, code } = req.query
+
+  if (!shop || !code) {
+    return res.status(400).send("Missing shop or code")
+  }
+
+  try {
+    const response = await fetch(
+      `https://${shop}/admin/oauth/access_token`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_id: process.env.SHOPIFY_CLIENT_ID,
+          client_secret: process.env.SHOPIFY_CLIENT_SECRET,
+          code,
+        }),
+      }
+    )
+
+    const data = await response.json()
+
+    const accessToken = data.access_token
+
+    console.log("SHOPIFY ACCESS TOKEN:", accessToken)
+
+    return res.send("Shopify OAuth success")
+  } catch (error) {
+    console.error(error)
+    return res.status(500).send("OAuth failed")
+  }
+})
 const PORT = process.env.PORT || 4000
 
 app.listen(PORT, () => {
