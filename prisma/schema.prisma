@@ -25,104 +25,89 @@ model Customer {
 model CustomerSecurity {
   id             String   @id @default(uuid())
   customerId     String   @unique
-  customer       Customer @relation(fields: [customerId], references: [id])
-
   failedAttempts Int      @default(0)
   lockedUntil    DateTime?
   updatedAt      DateTime @updatedAt
+  customer       Customer @relation(fields: [customerId], references: [id])
 }
 
 model CustomerSession {
-  id         String   @id @default(uuid())
-  customerId String
-  customer   Customer @relation(fields: [customerId], references: [id])
+  id                 String   @id @default(uuid())
+  customerId         String
+  deviceHash         String
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  lastUsedAt         DateTime @updatedAt
+  expiresAt          DateTime
+  absoluteExpiresAt  DateTime
 
-  deviceHash String
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  lastUsedAt DateTime @updatedAt
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([customerId])
+  @@index([expiresAt])
+  @@index([absoluteExpiresAt])
 }
 
 model OtpCode {
   id         String   @id @default(uuid())
   customerId String
-  customer   Customer @relation(fields: [customerId], references: [id])
-
   code       String
   expiresAt  DateTime
   createdAt  DateTime @default(now())
+  customer   Customer @relation(fields: [customerId], references: [id])
 }
 
 model Product {
-  id          String   @id @default(uuid())
-  sku         String   @unique
-  name        String
-  description String?
-  isActive    Boolean  @default(true)
-
-  stock       Int      @default(0)
-  moq         Int
-  quantityMax Int?
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  orderItems  OrderDraftItem[]
+  id               String   @id @default(uuid())
+  sku              String   @unique
+  name             String
+  description      String?
+  isActive         Boolean  @default(true)
+  stock            Int      @default(0)
+  moq              Int      @default(1)
+  quantityMax      Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  archived         Boolean  @default(false)
+  currency         String   @default("EUR")
+  imageUrl         String?
+  priceB2B         Float?
+  priceBase        Float
+  shopifyProductId String?  @unique
+  shopifyVariantId String?  @unique
+  tags             String?
+  orderItems       OrderDraftItem[]
 }
 
 model OrderDraft {
   id         String   @id @default(uuid())
   customerId String
-  customer   Customer @relation(fields: [customerId], references: [id])
-
   status     String   @default("PENDING")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
-
+  customer   Customer @relation(fields: [customerId], references: [id])
   items      OrderDraftItem[]
 }
 
 model OrderDraftItem {
-  id               String      @id @default(uuid())
-  orderDraftId     String
-  orderDraft       OrderDraft  @relation(fields: [orderDraftId], references: [id])
-
-  productId        String
-  product          Product     @relation(fields: [productId], references: [id])
-
+  id                String     @id @default(uuid())
+  orderDraftId      String
+  productId         String
   requestedQuantity Int
   approvedQuantity  Int
-  adjusted          Boolean
-
-  createdAt        DateTime @default(now())
-}
-
-model Session {
-  id                  String    @id
-  shop                String
-  state               String
-  isOnline            Boolean   @default(false)
-  scope               String?
-  expires             DateTime?
-  accessToken         String
-  userId              BigInt?
-  firstName           String?
-  lastName            String?
-  email               String?
-  accountOwner        Boolean   @default(false)
-  locale              String?
-  collaborator        Boolean?  @default(false)
-  emailVerified       Boolean?  @default(false)
-  refreshToken        String?
-  refreshTokenExpires DateTime?
+  adjusted          Boolean    @default(false)
+  createdAt         DateTime   @default(now())
+  orderDraft        OrderDraft @relation(fields: [orderDraftId], references: [id])
+  product           Product    @relation(fields: [productId], references: [id])
 }
 
 model Shop {
-  id         String   @id
-  shop       String   @unique
-  plan       String?  @default("free")
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime
-  isApproved Boolean  @default(false)
+  id           String   @id @default(uuid())
+  shop         String   @unique
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  isApproved   Boolean  @default(false)
+  accessToken  String
+  refreshToken String?
+  scope        String?
 }

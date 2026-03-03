@@ -1,5 +1,7 @@
 import { prisma } from "../lib/prisma.js"
 
+const SLIDING_DAYS = 90
+
 export const requireAuth = async (req, res, next) => {
   try {
     const sessionId = req.cookies.session_id
@@ -17,13 +19,10 @@ export const requireAuth = async (req, res, next) => {
       return res.status(401).json({ error: "Unauthorized" })
     }
 
-    const now = Date.now()
+    const now = new Date()
 
-    // 🔒 Expiration fixe : 30 jours max
-    const maxLifetime = 30 * 24 * 60 * 60 * 1000
-    const sessionAge = now - new Date(session.createdAt).getTime()
-
-    if (sessionAge > maxLifetime) {
+    // 🔒 Absolute expiration (180 jours)
+    if (now > session.absoluteExpiresAt) {
       await prisma.customerSession.update({
         where: { id: session.id },
         data: { isActive: false }
@@ -31,37 +30,40 @@ export const requireAuth = async (req, res, next) => {
 
       res.clearCookie("session_id", {
         httpOnly: true,
-        secure: false,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax"
+      })
+
+      return res.status(401).json({ error: "Session expired (absolute)" })
+    }
+
+    // 🔒 Sliding expiration (90 jours)
+    if (now > session.expiresAt) {
+      await prisma.customerSession.update({
+        where: { id: session.id },
+        data: { isActive: false }
+      })
+
+      res.clearCookie("session_id", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
         sameSite: "lax"
       })
 
       return res.status(401).json({ error: "Session expired" })
     }
 
-    // 🔒 Expiration par inactivité : 7 jours
-    const inactivityLimit = 7 * 24 * 60 * 60 * 1000
-    const lastUsed = new Date(session.lastUsedAt || session.createdAt).getTime()
-    const inactivityDuration = now - lastUsed
+    // 🔄 Sliding refresh
+    const newSlidingExpiration = new Date(
+      now.getTime() + SLIDING_DAYS * 24 * 60 * 60 * 1000
+    )
 
-    if (inactivityDuration > inactivityLimit) {
-      await prisma.customerSession.update({
-        where: { id: session.id },
-        data: { isActive: false }
-      })
-
-      res.clearCookie("session_id", {
-        httpOnly: true,
-        secure: false,
-        sameSite: "lax"
-      })
-
-      return res.status(401).json({ error: "Session expired due to inactivity" })
-    }
-
-    // 🔄 Mise à jour lastUsedAt
     await prisma.customerSession.update({
       where: { id: session.id },
-      data: { lastUsedAt: new Date() }
+      data: {
+        lastUsedAt: now,
+        expiresAt: newSlidingExpiration
+      }
     })
 
     req.customer = session.customer

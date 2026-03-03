@@ -7,6 +7,7 @@ import { prisma } from "./lib/prisma.js"
 import { requireAuth } from "./middleware/requireAuth.js"
 
 dotenv.config()
+console.log("ENV CHECK:", process.env.NODE_ENV)
 
 const app = express()
 
@@ -14,7 +15,7 @@ app.use(express.json())
 app.use(cookieParser())
 
 /* =====================================================
-   CORS CONFIGURATION (FIXED & PRODUCTION SAFE)
+   CORS CONFIGURATION
 ===================================================== */
 
 const allowedOrigins = [
@@ -26,67 +27,23 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow server-to-server or Postman calls
       if (!origin) return callback(null, true)
-
       if (allowedOrigins.includes(origin)) {
         return callback(null, true)
       }
-
       console.warn("Blocked by CORS:", origin)
-      return callback(null, false) // DO NOT throw error
+      return callback(null, false)
     },
     credentials: true,
   })
 )
-
-/* =====================================================
-   INTERNAL SHOPIFY INSTALL SYNC (SECURE)
-===================================================== */
-
-app.post("/internal/shopify/install", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization
-
-    if (!authHeader || authHeader !== `Bearer ${process.env.INTERNAL_SYNC_SECRET}`) {
-      return res.status(401).json({ error: "Unauthorized" })
-    }
-
-    const { shop, accessToken, refreshToken, scope } = req.body
-
-    if (!shop || !accessToken) {
-      return res.status(400).json({ error: "Missing required fields" })
-    }
-
-    await prisma.shop.upsert({
-      where: { shop },
-      update: {
-        accessToken,
-        refreshToken,
-        scope,
-      },
-      create: {
-        shop,
-        accessToken,
-        refreshToken,
-        scope,
-        isApproved: false,
-      },
-    })
-
-    return res.status(200).json({ success: true })
-  } catch (error) {
-    console.error("Internal Shopify install sync error:", error)
-    return res.status(500).json({ error: "Internal server error" })
-  }
-})
 
 /* HEALTH */
 app.get("/health", async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`
     res.json({ status: "OK", database: "connected" })
-  } catch (error) {
+  } catch {
     res.status(500).json({ status: "ERROR", database: "not connected" })
   }
 })
@@ -165,11 +122,23 @@ app.post("/auth/verify-otp", async (req, res) => {
 
     await prisma.otpCode.deleteMany({ where: { customerId: customer.id } })
 
+    const now = new Date()
+
+    const expiresAt = new Date(
+      now.getTime() + 90 * 24 * 60 * 60 * 1000
+    )
+
+    const absoluteExpiresAt = new Date(
+      now.getTime() + 180 * 24 * 60 * 60 * 1000
+    )
+
     const newSession = await prisma.customerSession.create({
       data: {
         customerId: customer.id,
         isActive: true,
-        deviceHash: crypto.randomBytes(32).toString("hex")
+        deviceHash: crypto.randomBytes(32).toString("hex"),
+        expiresAt,
+        absoluteExpiresAt
       }
     })
 
@@ -177,12 +146,13 @@ app.post("/auth/verify-otp", async (req, res) => {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 30 * 24 * 60 * 60 * 1000
+      maxAge: 90 * 24 * 60 * 60 * 1000
     })
 
     res.json({ message: "Authenticated" })
 
-  } catch {
+  } catch (error) {
+    console.error(error)
     res.status(500).json({ error: "Server error" })
   }
 })
