@@ -73,7 +73,7 @@ model Product {
   imageUrl         String?
   priceB2B         Float?
   priceBase        Float
-  shopifyProductId String?  @unique
+  shopifyProductId String?
   shopifyVariantId String?  @unique
   tags             String?
   orderItems       OrderDraftItem[]
