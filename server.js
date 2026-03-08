@@ -39,13 +39,125 @@ app.use(
   })
 )
 
-/* HEALTH */
+/* =====================================================
+   HEALTH CHECK
+===================================================== */
+
 app.get("/health", async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`
     res.json({ status: "OK", database: "connected" })
   } catch {
     res.status(500).json({ status: "ERROR", database: "not connected" })
+  }
+})
+
+/* =====================================================
+   INTERNAL PRODUCT SYNC (MASTER v4)
+===================================================== */
+
+app.post("/internal/sync-products", async (req, res) => {
+  try {
+    const providedSecret = req.headers["x-internal-secret"]
+
+    if (!providedSecret || providedSecret !== process.env.INTERNAL_SYNC_SECRET) {
+      return res.status(403).json({ error: "Forbidden" })
+    }
+
+    const shop = await prisma.shop.findFirst({
+      where: { isApproved: true }
+    })
+
+    if (!shop) {
+      return res.status(400).json({ error: "No approved shop found" })
+    }
+
+    const response = await fetch(
+      `https://${shop.shop}/admin/api/2026-01/products.json?limit=250`,
+      {
+        method: "GET",
+        headers: {
+          "X-Shopify-Access-Token": shop.accessToken,
+          "Content-Type": "application/json"
+        }
+      }
+    )
+
+    const data = await response.json()
+
+    if (!data.products) {
+      console.error("Invalid Shopify response:", data)
+      return res.status(500).json({ error: "Invalid Shopify response" })
+    }
+
+    let synced = 0
+    let skipped = 0
+
+    for (const product of data.products) {
+
+      for (const variant of product.variants) {
+
+        if (!variant.sku) {
+          skipped++
+          continue
+        }
+
+        const stock =
+          typeof variant.inventory_quantity === "number"
+            ? variant.inventory_quantity
+            : 0
+
+        const name =
+          variant.title && variant.title !== "Default Title"
+            ? `${product.title} - ${variant.title}`
+            : product.title
+
+        await prisma.product.upsert({
+          where: {
+            shopifyVariantId: String(variant.id)
+          },
+          update: {
+            sku: variant.sku,
+            name,
+            description: product.body_html,
+            isActive: product.status === "active",
+            archived: product.status !== "active",
+            stock,
+            priceBase: parseFloat(variant.price || 0),
+            imageUrl: product.image?.src || null,
+            tags: product.tags || null,
+            shopifyProductId: String(product.id)
+          },
+          create: {
+            sku: variant.sku,
+            name,
+            description: product.body_html,
+            isActive: product.status === "active",
+            archived: product.status !== "active",
+            stock,
+            moq: 1,
+            priceBase: parseFloat(variant.price || 0),
+            currency: "EUR",
+            imageUrl: product.image?.src || null,
+            tags: product.tags || null,
+            shopifyProductId: String(product.id),
+            shopifyVariantId: String(variant.id)
+          }
+        })
+
+        synced++
+      }
+    }
+
+    return res.json({
+      success: true,
+      synced,
+      skipped
+    })
+
+  } catch (error) {
+    console.error("SYNC ERROR:", error)
+    return res.status(500).json({ error: "Sync failed" })
   }
 })
 
@@ -159,10 +271,6 @@ app.post("/auth/verify-otp", async (req, res) => {
   }
 })
 
-/* =====================================================
-   SESSION ROUTES
-===================================================== */
-
 app.post("/auth/logout", requireAuth, async (req, res) => {
   await prisma.customerSession.update({
     where: { id: req.session.id },
@@ -189,7 +297,7 @@ app.get("/api/catalogue", requireAuth, async (req, res) => {
 })
 
 /* =====================================================
-   SHOPIFY OAUTH 2026 (PRODUCTION SAFE)
+   SHOPIFY OAUTH 2026
 ===================================================== */
 
 app.get("/auth/shopify", (req, res) => {
