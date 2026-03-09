@@ -58,25 +58,40 @@ model OtpCode {
 }
 
 model Product {
-  id               String   @id @default(uuid())
-  sku              String   @unique
-  name             String
-  description      String?
-  isActive         Boolean  @default(true)
-  stock            Int      @default(0)
-  moq              Int      @default(1)
-  quantityMax      Int?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  archived         Boolean  @default(false)
-  currency         String   @default("EUR")
-  imageUrl         String?
-  priceB2B         Float?
-  priceBase        Float
-  shopifyProductId String?
-  shopifyVariantId String?  @unique
-  tags             String?
-  orderItems       OrderDraftItem[]
+  id                String   @id @default(uuid())
+  shopifyProductId  String   @unique
+  title             String
+  description       String?
+  imageUrl          String?
+  tags              String?
+  isActive          Boolean  @default(true)
+  archived          Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  variants          ProductVariant[]
+}
+
+model ProductVariant {
+  id                 String   @id @default(uuid())
+  productId          String
+  shopifyVariantId   String   @unique
+  sku                String   @unique
+
+  priceBase          Float
+  priceB2B           Float?
+  currency           String   @default("EUR")
+
+  stock              Int      @default(0)
+  moq                Int      @default(1)
+  quantityMax        Int?
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  product            Product @relation(fields: [productId], references: [id])
+
+  orderItems         OrderDraftItem[]
 }
 
 model OrderDraft {
@@ -90,15 +105,16 @@ model OrderDraft {
 }
 
 model OrderDraftItem {
-  id                String     @id @default(uuid())
+  id                String           @id @default(uuid())
   orderDraftId      String
-  productId         String
+  productVariantId  String
   requestedQuantity Int
   approvedQuantity  Int
-  adjusted          Boolean    @default(false)
-  createdAt         DateTime   @default(now())
-  orderDraft        OrderDraft @relation(fields: [orderDraftId], references: [id])
-  product           Product    @relation(fields: [productId], references: [id])
+  adjusted          Boolean          @default(false)
+  createdAt         DateTime         @default(now())
+
+  orderDraft        OrderDraft       @relation(fields: [orderDraftId], references: [id])
+  productVariant    ProductVariant   @relation(fields: [productVariantId], references: [id])
 }
 
 model Shop {
