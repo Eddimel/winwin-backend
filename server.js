@@ -55,105 +55,91 @@ app.get("/health", async (req, res) => {
 /* =====================================================
    INTERNAL PRODUCT SYNC (MASTER v4)
 ===================================================== */
-
 app.post("/internal/sync-products", async (req, res) => {
   try {
-    const providedSecret = req.headers["x-internal-secret"]
+    const secret = req.headers["x-internal-secret"]
 
-    if (!providedSecret || providedSecret !== process.env.INTERNAL_SYNC_SECRET) {
-      return res.status(403).json({ error: "Forbidden" })
+    if (secret !== process.env.INTERNAL_SYNC_SECRET) {
+      return res.status(403).json({ error: "Unauthorized" })
     }
 
-    const shop = await prisma.shop.findFirst({
+    const shopRecord = await prisma.shop.findFirst({
       where: { isApproved: true }
     })
 
-    if (!shop) {
+    if (!shopRecord) {
       return res.status(400).json({ error: "No approved shop found" })
     }
 
-    const response = await fetch(
-      `https://${shop.shop}/admin/api/2026-01/products.json?limit=250`,
-      {
-        method: "GET",
-        headers: {
-          "X-Shopify-Access-Token": shop.accessToken,
-          "Content-Type": "application/json"
-        }
-      }
-    )
-
-    const data = await response.json()
-
-    if (!data.products) {
-      console.error("Invalid Shopify response:", data)
-      return res.status(500).json({ error: "Invalid Shopify response" })
-    }
+    const accessToken = shopRecord.accessToken
+    const shop = shopRecord.shop
 
     let synced = 0
     let skipped = 0
+    let nextUrl = `https://${shop}/admin/api/2026-01/products.json?status=active&limit=250`
 
-    for (const product of data.products) {
-
-      for (const variant of product.variants) {
-
-        if (!variant.sku) {
-          skipped++
-          continue
+    while (nextUrl) {
+      const response = await fetch(nextUrl, {
+        headers: {
+          "X-Shopify-Access-Token": accessToken,
+          "Content-Type": "application/json"
         }
+      })
 
-        const stock =
-          typeof variant.inventory_quantity === "number"
-            ? variant.inventory_quantity
-            : 0
+      const data = await response.json()
 
-        const name =
-          variant.title && variant.title !== "Default Title"
-            ? `${product.title} - ${variant.title}`
-            : product.title
+      if (!data.products) {
+        throw new Error("Invalid Shopify response")
+      }
 
-        await prisma.product.upsert({
-          where: {
-            shopifyVariantId: String(variant.id)
-          },
-          update: {
-            sku: variant.sku,
-            name,
-            description: product.body_html,
-            isActive: product.status === "active",
-            archived: product.status !== "active",
-            stock,
-            priceBase: parseFloat(variant.price || 0),
-            imageUrl: product.image?.src || null,
-            tags: product.tags || null,
-            shopifyProductId: String(product.id)
-          },
-          create: {
-            sku: variant.sku,
-            name,
-            description: product.body_html,
-            isActive: product.status === "active",
-            archived: product.status !== "active",
-            stock,
-            moq: 1,
-            priceBase: parseFloat(variant.price || 0),
-            currency: "EUR",
-            imageUrl: product.image?.src || null,
-            tags: product.tags || null,
-            shopifyProductId: String(product.id),
-            shopifyVariantId: String(variant.id)
+      for (const product of data.products) {
+        for (const variant of product.variants) {
+
+          if (!variant.sku || variant.sku.trim() === "") {
+            skipped++
+            continue
           }
-        })
 
-        synced++
+          await prisma.product.upsert({
+            where: { sku: variant.sku },
+            update: {
+              name: product.title,
+              description: product.body_html,
+              stock: variant.inventory_quantity || 0,
+              priceBase: parseFloat(variant.price) || 0,
+              imageUrl: product.image?.src || null,
+              shopifyProductId: String(product.id),
+              shopifyVariantId: String(variant.id),
+              isActive: true
+            },
+            create: {
+              sku: variant.sku,
+              name: product.title,
+              description: product.body_html,
+              stock: variant.inventory_quantity || 0,
+              priceBase: parseFloat(variant.price) || 0,
+              imageUrl: product.image?.src || null,
+              shopifyProductId: String(product.id),
+              shopifyVariantId: String(variant.id),
+              isActive: true
+            }
+          })
+
+          synced++
+        }
+      }
+
+      const linkHeader = response.headers.get("link")
+
+      if (linkHeader && linkHeader.includes('rel="next"')) {
+        const match = linkHeader.match(/<([^>]+)>; rel="next"/)
+        nextUrl = match ? match[1] : null
+      } else {
+        nextUrl = null
       }
     }
 
-    return res.json({
-      success: true,
-      synced,
-      skipped
-    })
+    return res.json({ success: true, synced, skipped })
 
   } catch (error) {
     console.error("SYNC ERROR:", error)
