@@ -53,8 +53,9 @@ app.get("/health", async (req, res) => {
 })
 
 /* =====================================================
-   INTERNAL PRODUCT SYNC (MASTER v4)
+   INTERNAL PRODUCT SYNC (PRODUCT + VARIANT)
 ===================================================== */
+
 app.post("/internal/sync-products", async (req, res) => {
   try {
     const secret = req.headers["x-internal-secret"]
@@ -93,6 +94,30 @@ app.post("/internal/sync-products", async (req, res) => {
       }
 
       for (const product of data.products) {
+
+        // 1️⃣ Upsert Product (parent)
+        const parent = await prisma.product.upsert({
+          where: { shopifyProductId: String(product.id) },
+          update: {
+            title: product.title,
+            description: product.body_html,
+            imageUrl: product.image?.src || null,
+            tags: product.tags || null,
+            isActive: product.status === "active",
+            archived: product.status !== "active"
+          },
+          create: {
+            shopifyProductId: String(product.id),
+            title: product.title,
+            description: product.body_html,
+            imageUrl: product.image?.src || null,
+            tags: product.tags || null,
+            isActive: product.status === "active",
+            archived: product.status !== "active"
+          }
+        })
+
+        // 2️⃣ Upsert Variants
         for (const variant of product.variants) {
 
           if (!variant.sku || variant.sku.trim() === "") {
@@ -100,28 +125,20 @@ app.post("/internal/sync-products", async (req, res) => {
             continue
           }
 
-          await prisma.product.upsert({
-            where: { sku: variant.sku },
+          await prisma.productVariant.upsert({
+            where: { shopifyVariantId: String(variant.id) },
             update: {
-              name: product.title,
-              description: product.body_html,
-              stock: variant.inventory_quantity || 0,
+              sku: variant.sku,
               priceBase: parseFloat(variant.price) || 0,
-              imageUrl: product.image?.src || null,
-              shopifyProductId: String(product.id),
-              shopifyVariantId: String(variant.id),
-              isActive: true
+              stock: variant.inventory_quantity || 0,
+              productId: parent.id
             },
             create: {
-              sku: variant.sku,
-              name: product.title,
-              description: product.body_html,
-              stock: variant.inventory_quantity || 0,
-              priceBase: parseFloat(variant.price) || 0,
-              imageUrl: product.image?.src || null,
-              shopifyProductId: String(product.id),
               shopifyVariantId: String(variant.id),
-              isActive: true
+              sku: variant.sku,
+              priceBase: parseFloat(variant.price) || 0,
+              stock: variant.inventory_quantity || 0,
+              productId: parent.id
             }
           })
 
@@ -224,13 +241,8 @@ app.post("/auth/verify-otp", async (req, res) => {
 
     const now = new Date()
 
-    const expiresAt = new Date(
-      now.getTime() + 90 * 24 * 60 * 60 * 1000
-    )
-
-    const absoluteExpiresAt = new Date(
-      now.getTime() + 180 * 24 * 60 * 60 * 1000
-    )
+    const expiresAt = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
+    const absoluteExpiresAt = new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000)
 
     const newSession = await prisma.customerSession.create({
       data: {
@@ -271,19 +283,26 @@ app.get("/api/me", requireAuth, (req, res) => {
   res.json({ customer: req.customer })
 })
 
+/* =====================================================
+   CATALOGUE (MODE B)
+===================================================== */
+
 app.get("/api/catalogue", requireAuth, async (req, res) => {
   const products = await prisma.product.findMany({
-    where: { isActive: true }
+    where: { isActive: true },
+    include: {
+      variants: true
+    }
   })
 
   res.json({
     success: true,
-    data: { catalogue: products }
+    data: products
   })
 })
 
 /* =====================================================
-   SHOPIFY OAUTH 2026
+   SHOPIFY OAUTH
 ===================================================== */
 
 app.get("/auth/shopify", (req, res) => {
@@ -329,7 +348,6 @@ app.get("/auth/shopify/callback", async (req, res) => {
     const data = await response.json()
 
     if (!data.access_token) {
-      console.error("Token exchange failed:", data)
       return res.status(500).send("OAuth token exchange failed")
     }
 
@@ -347,11 +365,8 @@ app.get("/auth/shopify/callback", async (req, res) => {
       },
     })
 
-    console.log("Shop installed & token stored:", shop)
-
     return res.send("Shopify OAuth success & token stored")
-  } catch (error) {
-    console.error("OAuth callback error:", error)
+  } catch {
     return res.status(500).send("OAuth failed")
   }
 })
