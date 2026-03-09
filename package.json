@@ -5,8 +5,11 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-  "build": "prisma generate",
-  "start": "node server.js"
+    "build": "prisma generate",
+    "start": "prisma db push && node server.js"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   },
   "keywords": [],
   "author": "",
