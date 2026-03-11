@@ -53,147 +53,78 @@ app.get("/health", async (req, res) => {
 })
 
 /* =====================================================
-   INTERNAL PRODUCT SYNC (PRODUCT + VARIANT)
+   AUTH SYSTEM
 ===================================================== */
 
-app.post("/internal/sync-products", async (req, res) => {
-  try {
-    const secret = req.headers["x-internal-secret"]
+/* ---------- REGISTER ---------- */
 
-    if (secret !== process.env.INTERNAL_SYNC_SECRET) {
-      return res.status(403).json({ error: "Unauthorized" })
+app.post("/auth/register", async (req, res) => {
+  try {
+    const { phone, firstName, lastName, email } = req.body
+
+    if (!phone || !firstName || !lastName) {
+      return res.status(400).json({ error: "Missing required fields" })
     }
 
-    const shopRecord = await prisma.shop.findFirst({
-      where: { isApproved: true }
+    const existing = await prisma.customer.findUnique({
+      where: { phone }
     })
 
-    if (!shopRecord) {
-      return res.status(400).json({ error: "No approved shop found" })
+    if (existing) {
+      return res.status(409).json({ error: "ALREADY_EXISTS" })
     }
 
-    const accessToken = shopRecord.accessToken
-    const shop = shopRecord.shop
-
-    let synced = 0
-    let skipped = 0
-    let nextUrl = `https://${shop}/admin/api/2026-01/products.json?status=active&limit=250`
-
-    while (nextUrl) {
-      const response = await fetch(nextUrl, {
-        headers: {
-          "X-Shopify-Access-Token": accessToken,
-          "Content-Type": "application/json"
-        }
-      })
-
-      const data = await response.json()
-
-      if (!data.products) {
-        throw new Error("Invalid Shopify response")
+    await prisma.customer.create({
+      data: {
+        phone,
+        firstName,
+        lastName,
+        email,
+        status: "PENDING"
       }
+    })
 
-      for (const product of data.products) {
-
-        // 1️⃣ Upsert Product (parent)
-        const parent = await prisma.product.upsert({
-          where: { shopifyProductId: String(product.id) },
-          update: {
-            title: product.title,
-            description: product.body_html,
-            imageUrl: product.image?.src || null,
-            tags: product.tags || null,
-            isActive: product.status === "active",
-            archived: product.status !== "active"
-          },
-          create: {
-            shopifyProductId: String(product.id),
-            title: product.title,
-            description: product.body_html,
-            imageUrl: product.image?.src || null,
-            tags: product.tags || null,
-            isActive: product.status === "active",
-            archived: product.status !== "active"
-          }
-        })
-
-        // 2️⃣ Upsert Variants
-        for (const variant of product.variants) {
-
-          if (!variant.sku || variant.sku.trim() === "") {
-            skipped++
-            continue
-          }
-
-          await prisma.productVariant.upsert({
-            where: { shopifyVariantId: String(variant.id) },
-            update: {
-              sku: variant.sku,
-              priceBase: parseFloat(variant.price) || 0,
-              stock: variant.inventory_quantity || 0,
-              productId: parent.id
-            },
-            create: {
-              shopifyVariantId: String(variant.id),
-              sku: variant.sku,
-              priceBase: parseFloat(variant.price) || 0,
-              stock: variant.inventory_quantity || 0,
-              productId: parent.id
-            }
-          })
-
-          synced++
-        }
-      }
-
-      const linkHeader = response.headers.get("link")
-
-      if (linkHeader && linkHeader.includes('rel="next"')) {
-        const match = linkHeader.match(/<([^>]+)>; rel="next"/)
-        nextUrl = match ? match[1] : null
-      } else {
-        nextUrl = null
-      }
-    }
-
-    return res.json({ success: true, synced, skipped })
+    return res.json({ message: "Registration submitted" })
 
   } catch (error) {
-    console.error("SYNC ERROR:", error)
-    return res.status(500).json({ error: "Sync failed" })
+    console.error("REGISTER ERROR:", error)
+    return res.status(500).json({ error: "Server error" })
   }
 })
 
-/* =====================================================
-   AUTH SYSTEM (OTP)
-===================================================== */
+/* ---------- REQUEST OTP ---------- */
 
 app.post("/auth/request-otp", async (req, res) => {
   try {
     const { phone } = req.body
-    if (!phone) return res.status(400).json({ error: "Phone is required" })
 
-    let customer = await prisma.customer.findUnique({
-      where: { phone },
-      include: { security: true }
+    if (!phone) {
+      return res.status(400).json({ error: "Phone is required" })
+    }
+
+    const customer = await prisma.customer.findUnique({
+      where: { phone }
     })
 
     if (!customer) {
-      customer = await prisma.customer.create({
-        data: {
-          phone,
-          name: "Pending User",
-          security: { create: {} }
-        },
-        include: { security: true }
-      })
+      return res.status(404).json({ error: "NOT_REGISTERED" })
+    }
+
+    if (customer.status === "PENDING") {
+      return res.status(403).json({ error: "PENDING_APPROVAL" })
+    }
+
+    if (customer.status === "REJECTED") {
+      return res.status(403).json({ error: "REJECTED" })
     }
 
     const otp = crypto.randomInt(100000, 999999).toString()
     const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex")
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
 
-    await prisma.otpCode.deleteMany({ where: { customerId: customer.id } })
+    await prisma.otpCode.deleteMany({
+      where: { customerId: customer.id }
+    })
 
     await prisma.otpCode.create({
       data: {
@@ -204,40 +135,50 @@ app.post("/auth/request-otp", async (req, res) => {
     })
 
     console.log("DEV OTP:", otp)
-    res.json({ message: "OTP sent" })
 
-  } catch {
-    res.status(500).json({ error: "Server error" })
+    return res.json({ message: "OTP sent" })
+
+  } catch (error) {
+    console.error("OTP ERROR:", error)
+    return res.status(500).json({ error: "Server error" })
   }
 })
+
+/* ---------- VERIFY OTP ---------- */
 
 app.post("/auth/verify-otp", async (req, res) => {
   try {
     const { phone, otp } = req.body
-    if (!phone || !otp)
+
+    if (!phone || !otp) {
       return res.status(400).json({ error: "Phone and OTP required" })
+    }
 
     const customer = await prisma.customer.findUnique({
-      where: { phone },
-      include: { security: true }
+      where: { phone }
     })
 
-    if (!customer)
-      return res.status(400).json({ error: "Customer not found" })
+    if (!customer || customer.status !== "APPROVED") {
+      return res.status(403).json({ error: "NOT_AUTHORIZED" })
+    }
 
     const otpRecord = await prisma.otpCode.findFirst({
       where: { customerId: customer.id }
     })
 
-    if (!otpRecord || otpRecord.expiresAt < new Date())
+    if (!otpRecord || otpRecord.expiresAt < new Date()) {
       return res.status(400).json({ error: "OTP invalid or expired" })
+    }
 
     const hashedInput = crypto.createHash("sha256").update(otp).digest("hex")
 
-    if (hashedInput !== otpRecord.code)
+    if (hashedInput !== otpRecord.code) {
       return res.status(400).json({ error: "Invalid OTP" })
+    }
 
-    await prisma.otpCode.deleteMany({ where: { customerId: customer.id } })
+    await prisma.otpCode.deleteMany({
+      where: { customerId: customer.id }
+    })
 
     const now = new Date()
 
@@ -247,7 +188,6 @@ app.post("/auth/verify-otp", async (req, res) => {
     const newSession = await prisma.customerSession.create({
       data: {
         customerId: customer.id,
-        isActive: true,
         deviceHash: crypto.randomBytes(32).toString("hex"),
         expiresAt,
         absoluteExpiresAt
@@ -261,13 +201,15 @@ app.post("/auth/verify-otp", async (req, res) => {
       maxAge: 90 * 24 * 60 * 60 * 1000
     })
 
-    res.json({ message: "Authenticated" })
+    return res.json({ message: "Authenticated" })
 
   } catch (error) {
-    console.error(error)
-    res.status(500).json({ error: "Server error" })
+    console.error("VERIFY ERROR:", error)
+    return res.status(500).json({ error: "Server error" })
   }
 })
+
+/* ---------- LOGOUT ---------- */
 
 app.post("/auth/logout", requireAuth, async (req, res) => {
   await prisma.customerSession.update({
@@ -284,8 +226,9 @@ app.get("/api/me", requireAuth, (req, res) => {
 })
 
 /* =====================================================
-   CATALOGUE (MODE B)
+   CATALOGUE
 ===================================================== */
+
 app.get("/api/catalogue", requireAuth, async (req, res) => {
   try {
     const products = await prisma.product.findMany({
@@ -295,9 +238,7 @@ app.get("/api/catalogue", requireAuth, async (req, res) => {
         title: true,
         imageUrl: true,
         variants: {
-          where: {
-            sku: { not: null }
-          },
+          where: { sku: { not: null } },
           select: {
             id: true,
             sku: true,
@@ -318,76 +259,6 @@ app.get("/api/catalogue", requireAuth, async (req, res) => {
   } catch (error) {
     console.error("CATALOGUE ERROR:", error)
     return res.status(500).json({ error: "Failed to load catalogue" })
-  }
-})
-
-/* =====================================================
-   SHOPIFY OAUTH
-===================================================== */
-
-app.get("/auth/shopify", (req, res) => {
-  const shop = req.query.shop
-
-  if (!shop) {
-    return res.status(400).send("Missing shop parameter")
-  }
-
-  const state = crypto.randomBytes(16).toString("hex")
-
-  const installUrl =
-    `https://${shop}/admin/oauth/authorize` +
-    `?client_id=${process.env.SHOPIFY_CLIENT_ID}` +
-    `&scope=${process.env.SHOPIFY_SCOPES}` +
-    `&redirect_uri=${process.env.SHOPIFY_REDIRECT_URI}` +
-    `&state=${state}`
-
-  return res.redirect(installUrl)
-})
-
-app.get("/auth/shopify/callback", async (req, res) => {
-  const { shop, code } = req.query
-
-  if (!shop || !code) {
-    return res.status(400).send("Missing shop or code")
-  }
-
-  try {
-    const response = await fetch(
-      `https://${shop}/admin/oauth/access_token`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          client_id: process.env.SHOPIFY_CLIENT_ID,
-          client_secret: process.env.SHOPIFY_CLIENT_SECRET,
-          code,
-        }),
-      }
-    )
-
-    const data = await response.json()
-
-    if (!data.access_token) {
-      return res.status(500).send("OAuth token exchange failed")
-    }
-
-    await prisma.shop.upsert({
-      where: { shop },
-      update: {
-        accessToken: data.access_token,
-        scope: data.scope,
-      },
-      create: {
-        shop,
-        accessToken: data.access_token,
-        scope: data.scope,
-        isApproved: false,
-      },
-    })
-
-    return res.send("Shopify OAuth success & token stored")
-  } catch {
-    return res.status(500).send("OAuth failed")
   }
 })
 
