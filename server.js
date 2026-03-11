@@ -286,19 +286,39 @@ app.get("/api/me", requireAuth, (req, res) => {
 /* =====================================================
    CATALOGUE (MODE B)
 ===================================================== */
-
 app.get("/api/catalogue", requireAuth, async (req, res) => {
-  const products = await prisma.product.findMany({
-    where: { isActive: true },
-    include: {
-      variants: true
-    }
-  })
+  try {
+    const products = await prisma.product.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        title: true,
+        imageUrl: true,
+        variants: {
+          where: {
+            sku: { not: null }
+          },
+          select: {
+            id: true,
+            sku: true,
+            priceBase: true,
+            moq: true,
+            quantityMax: true
+          }
+        }
+      }
+    })
 
-  res.json({
-    success: true,
-    data: products
-  })
+    return res.json({
+      success: true,
+      count: products.length,
+      data: products
+    })
+
+  } catch (error) {
+    console.error("CATALOGUE ERROR:", error)
+    return res.status(500).json({ error: "Failed to load catalogue" })
+  }
 })
 
 /* =====================================================
