@@ -52,10 +52,50 @@ app.get("/health", async (req, res) => {
 })
 
 /* =====================================================
-   AUTH SYSTEM
+   INTERNAL CUSTOMER STATUS UPDATE
 ===================================================== */
 
-/* ---------- REGISTER ---------- */
+app.patch("/internal/customer/:id/status", async (req, res) => {
+  try {
+    const secret = req.headers["x-internal-secret"]
+
+    if (secret !== process.env.INTERNAL_SYNC_SECRET) {
+      return res.status(403).json({ error: "Unauthorized" })
+    }
+
+    const { id } = req.params
+    const { status } = req.body
+
+    const allowedStatuses = ["PENDING", "APPROVED", "REJECTED", "SUSPENDED"]
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ error: "Invalid status" })
+    }
+
+    const customer = await prisma.customer.findUnique({
+      where: { id }
+    })
+
+    if (!customer) {
+      return res.status(404).json({ error: "Customer not found" })
+    }
+
+    await prisma.customer.update({
+      where: { id },
+      data: { status }
+    })
+
+    return res.json({ message: "Status updated" })
+
+  } catch (error) {
+    console.error("STATUS UPDATE ERROR:", error)
+    return res.status(500).json({ error: "Server error" })
+  }
+})
+
+/* =====================================================
+   AUTH SYSTEM
+===================================================== */
 
 app.post("/auth/register", async (req, res) => {
   try {
@@ -90,8 +130,6 @@ app.post("/auth/register", async (req, res) => {
   }
 })
 
-/* ---------- REQUEST OTP ---------- */
-
 app.post("/auth/request-otp", async (req, res) => {
   try {
     const { phone } = req.body
@@ -114,6 +152,10 @@ app.post("/auth/request-otp", async (req, res) => {
 
     if (customer.status === "REJECTED") {
       return res.status(403).json({ error: "REJECTED" })
+    }
+
+    if (customer.status === "SUSPENDED") {
+      return res.status(403).json({ error: "SUSPENDED" })
     }
 
     const otp = crypto.randomInt(100000, 999999).toString()
@@ -141,8 +183,6 @@ app.post("/auth/request-otp", async (req, res) => {
     return res.status(500).json({ error: "Server error" })
   }
 })
-
-/* ---------- VERIFY OTP ---------- */
 
 app.post("/auth/verify-otp", async (req, res) => {
   try {
@@ -207,8 +247,6 @@ app.post("/auth/verify-otp", async (req, res) => {
   }
 })
 
-/* ---------- LOGOUT ---------- */
-
 app.post("/auth/logout", requireAuth, async (req, res) => {
   await prisma.customerSession.update({
     where: { id: req.session.id },
@@ -221,43 +259,6 @@ app.post("/auth/logout", requireAuth, async (req, res) => {
 
 app.get("/api/me", requireAuth, (req, res) => {
   res.json({ customer: req.customer })
-})
-
-/* =====================================================
-   CATALOGUE
-===================================================== */
-
-app.get("/api/catalogue", requireAuth, async (req, res) => {
-  try {
-    const products = await prisma.product.findMany({
-      where: { isActive: true },
-      select: {
-        id: true,
-        title: true,
-        imageUrl: true,
-        variants: {
-          where: { sku: { not: null } },
-          select: {
-            id: true,
-            sku: true,
-            priceBase: true,
-            moq: true,
-            quantityMax: true
-          }
-        }
-      }
-    })
-
-    return res.json({
-      success: true,
-      count: products.length,
-      data: products
-    })
-
-  } catch (error) {
-    console.error("CATALOGUE ERROR:", error)
-    return res.status(500).json({ error: "Failed to load catalogue" })
-  }
 })
 
 const PORT = process.env.PORT || 4000
