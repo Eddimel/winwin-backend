@@ -52,7 +52,7 @@ app.get("/health", async (req, res) => {
 })
 
 /* =====================================================
-   INTERNAL CUSTOMER STATUS UPDATE
+   INTERNAL CUSTOMER STATUS UPDATE (SECRET PROTECTED)
 ===================================================== */
 
 app.patch("/internal/customer/:id/status", async (req, res) => {
@@ -94,6 +94,65 @@ app.patch("/internal/customer/:id/status", async (req, res) => {
 })
 
 /* =====================================================
+   ADMIN CUSTOMER MANAGEMENT (TEMP UNPROTECTED)
+===================================================== */
+
+app.get("/admin/customers", async (req, res) => {
+  try {
+    const customers = await prisma.customer.findMany({
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        phone: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        status: true,
+        createdAt: true
+      }
+    })
+
+    return res.json({ success: true, data: customers })
+
+  } catch (error) {
+    console.error("ADMIN LIST ERROR:", error)
+    return res.status(500).json({ error: "Server error" })
+  }
+})
+
+app.patch("/admin/customers/:id/status", async (req, res) => {
+  try {
+    const { id } = req.params
+    const { status } = req.body
+
+    const allowedStatuses = ["PENDING", "APPROVED", "REJECTED", "SUSPENDED"]
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ error: "Invalid status" })
+    }
+
+    const customer = await prisma.customer.findUnique({
+      where: { id }
+    })
+
+    if (!customer) {
+      return res.status(404).json({ error: "Customer not found" })
+    }
+
+    await prisma.customer.update({
+      where: { id },
+      data: { status }
+    })
+
+    return res.json({ message: "Status updated" })
+
+  } catch (error) {
+    console.error("ADMIN STATUS ERROR:", error)
+    return res.status(500).json({ error: "Server error" })
+  }
+})
+
+/* =====================================================
    AUTH SYSTEM
 ===================================================== */
 
@@ -116,7 +175,8 @@ app.post("/auth/register", async (req, res) => {
     await prisma.customer.create({
       data: {
         phone,
-        name: `${firstName} ${lastName}`,
+        firstName,
+        lastName,
         email,
         status: "PENDING"
       }
