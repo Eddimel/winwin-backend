@@ -104,8 +104,7 @@ app.get("/admin/customers", async (req, res) => {
       select: {
         id: true,
         phone: true,
-        firstName: true,
-        lastName: true,
+        name: true,
         email: true,
         status: true,
         createdAt: true
