@@ -5,7 +5,6 @@ import cookieParser from "cookie-parser"
 import crypto from "crypto"
 import { prisma } from "./lib/prisma.js"
 import { requireAuth } from "./middleware/requireAuth.js"
-import fetch from "node-fetch"
 
 dotenv.config()
 console.log("ENV CHECK:", process.env.NODE_ENV)
@@ -77,8 +76,7 @@ app.post("/auth/register", async (req, res) => {
     await prisma.customer.create({
       data: {
         phone,
-        firstName,
-        lastName,
+        name: `${firstName} ${lastName}`,
         email,
         status: "PENDING"
       }
