@@ -7,19 +7,27 @@ datasource db {
   provider = "postgresql"
 }
 
-model Customer {
-  id        String   @id @default(uuid())
-  phone     String   @unique
-  name      String
-  email     String?
-  company   String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
+enum CustomerStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
 
-  sessions   CustomerSession[]
-  otpCodes   OtpCode[]
-  security   CustomerSecurity?
-  orders     OrderDraft[]
+model Customer {
+  id          String          @id @default(uuid())
+  phone       String          @unique
+  name        String
+  email       String?
+  company     String?
+  isActive    Boolean         @default(true)
+  status      CustomerStatus  @default(APPROVED)
+  createdAt   DateTime        @default(now())
+
+  sessions    CustomerSession[]
+  otpCodes    OtpCode[]
+  security    CustomerSecurity?
+  orders      OrderDraft[]
 }
 
 model CustomerSecurity {
@@ -90,7 +98,6 @@ model ProductVariant {
   updatedAt          DateTime @updatedAt
 
   product            Product @relation(fields: [productId], references: [id])
-
   orderItems         OrderDraftItem[]
 }
 
