@@ -14,20 +14,31 @@ enum CustomerStatus {
   SUSPENDED
 }
 
+enum PackagingType {
+  UNIT
+  PACK
+  CARTON
+}
+
 model Customer {
-  id          String          @id @default(uuid())
-  phone       String          @unique
-  name        String
-  email       String?
-  company     String?
-  isActive    Boolean         @default(true)
-  status      CustomerStatus  @default(APPROVED)
-  createdAt   DateTime        @default(now())
+  id                   String          @id @default(uuid())
+  phone                String          @unique
+  name                 String
+  email                String?
+  company              String?
+  isActive             Boolean         @default(true)
+  status               CustomerStatus  @default(APPROVED)
+
+  shopId               String?
+  shopifyCustomerId    String?
+
+  createdAt            DateTime        @default(now())
 
   sessions    CustomerSession[]
   otpCodes    OtpCode[]
   security    CustomerSecurity?
   orders      OrderDraft[]
+  carts       Cart[]
 }
 
 model CustomerSecurity {
@@ -36,6 +47,7 @@ model CustomerSecurity {
   failedAttempts Int      @default(0)
   lockedUntil    DateTime?
   updatedAt      DateTime @updatedAt
+
   customer       Customer @relation(fields: [customerId], references: [id])
 }
 
@@ -62,43 +74,96 @@ model OtpCode {
   code       String
   expiresAt  DateTime
   createdAt  DateTime @default(now())
+
   customer   Customer @relation(fields: [customerId], references: [id])
 }
 
 model Product {
-  id                String   @id @default(uuid())
-  shopifyProductId  String   @unique
-  title             String
-  description       String?
-  imageUrl          String?
-  tags              String?
-  isActive          Boolean  @default(true)
-  archived          Boolean  @default(false)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id               String   @id @default(uuid())
+  shopifyProductId String   @unique
+  title            String
+  description      String?
+  imageUrl         String?
+  tags             String?
+  isActive         Boolean  @default(true)
+  archived         Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  variants          ProductVariant[]
+  variants           ProductVariant[]
+  productCollections ProductCollection[]
 }
 
 model ProductVariant {
-  id                 String   @id @default(uuid())
-  productId          String
-  shopifyVariantId   String   @unique
-  sku                String   @unique
+  id               String   @id @default(uuid())
+  productId        String
+  shopifyVariantId String   @unique
+  sku              String?
 
-  priceBase          Float
-  priceB2B           Float?
-  currency           String   @default("EUR")
+  priceBase        Float
+  priceB2B         Float?
+  currency         String   @default("EUR")
 
-  stock              Int      @default(0)
-  moq                Int      @default(1)
-  quantityMax        Int?
+  stock            Int      @default(0)
 
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  moq              Int      @default(1)
+  quantityStep     Int      @default(1)
+  quantityMax      Int?
 
-  product            Product @relation(fields: [productId], references: [id])
-  orderItems         OrderDraftItem[]
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  product          Product  @relation(fields: [productId], references: [id])
+
+  orderDraftItems  OrderDraftItem[]
+
+  packagings       VariantPackaging[]
+  priceTiers       VariantPriceTier[]
+  bundleItems      ProductBundleItem[]
+
+  cartItems        CartItem[]
+
+  @@index([productId])
+}
+
+model VariantPackaging {
+  id        String        @id @default(uuid())
+  variantId String
+
+  type      PackagingType
+  quantity  Int
+  price     Float?
+
+  productVariant ProductVariant @relation(fields: [variantId], references: [id])
+}
+
+model VariantPriceTier {
+  id        String @id @default(uuid())
+  variantId String
+
+  minQty    Int
+  price     Float
+
+  productVariant ProductVariant @relation(fields: [variantId], references: [id])
+}
+
+model ProductBundle {
+  id          String   @id @default(uuid())
+  bundlePrice Float
+  createdAt   DateTime @default(now())
+
+  items ProductBundleItem[]
+}
+
+model ProductBundleItem {
+  id        String @id @default(uuid())
+
+  bundleId  String
+  variantId String
+  quantity  Int
+
+  bundle  ProductBundle  @relation(fields: [bundleId], references: [id])
+  variant ProductVariant @relation(fields: [variantId], references: [id])
 }
 
 model OrderDraft {
@@ -107,21 +172,55 @@ model OrderDraft {
   status     String   @default("PENDING")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+
   customer   Customer @relation(fields: [customerId], references: [id])
   items      OrderDraftItem[]
 }
 
 model OrderDraftItem {
-  id                String           @id @default(uuid())
+  id                String   @id @default(uuid())
   orderDraftId      String
   productVariantId  String
   requestedQuantity Int
   approvedQuantity  Int
-  adjusted          Boolean          @default(false)
-  createdAt         DateTime         @default(now())
+  adjusted          Boolean  @default(false)
+  createdAt         DateTime @default(now())
 
-  orderDraft        OrderDraft       @relation(fields: [orderDraftId], references: [id])
-  productVariant    ProductVariant   @relation(fields: [productVariantId], references: [id])
+  orderDraft        OrderDraft     @relation(fields: [orderDraftId], references: [id])
+  productVariant    ProductVariant @relation(fields: [productVariantId], references: [id])
+}
+
+model Cart {
+  id         String   @id @default(uuid())
+  customerId String
+
+  status     String   @default("ACTIVE")
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  items      CartItem[]
+
+  @@index([customerId])
+}
+
+model CartItem {
+  id        String   @id @default(uuid())
+
+  cartId    String
+  variantId String
+
+  quantity  Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cart      Cart           @relation(fields: [cartId], references: [id])
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+
+  @@unique([cartId, variantId])
 }
 
 model Shop {
@@ -133,4 +232,27 @@ model Shop {
   accessToken  String
   refreshToken String?
   scope        String?
+}
+
+model Collection {
+  id                  String   @id @default(uuid())
+  shopifyCollectionId String   @unique
+  title               String
+  handle              String
+  isVisible           Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  products            ProductCollection[]
+}
+
+model ProductCollection {
+  id           String @id @default(uuid())
+  productId    String
+  collectionId String
+
+  product      Product    @relation(fields: [productId], references: [id])
+  collection   Collection @relation(fields: [collectionId], references: [id])
+
+  @@unique([productId, collectionId])
 }

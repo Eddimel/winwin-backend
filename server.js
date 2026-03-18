@@ -3,11 +3,21 @@ import express from "express"
 import cors from "cors"
 import cookieParser from "cookie-parser"
 import crypto from "crypto"
+import fetch from "node-fetch"
+import { createDraftOrder } from "./services/shopifyService.js"
+import { syncShopifyCustomer } from "./services/shopifyCustomerService.js"
+
 import { prisma } from "./lib/prisma.js"
+import { requireShopifyAdmin } from "./middleware/requireShopifyAdmin.js"
 import { requireAuth } from "./middleware/requireAuth.js"
+import {
+  addItem,
+  updateItem,
+  removeItem,
+  getCart
+} from "./services/cartService.js"
 
 dotenv.config()
-console.log("ENV CHECK:", process.env.NODE_ENV)
 
 const app = express()
 
@@ -15,7 +25,98 @@ app.use(express.json())
 app.use(cookieParser())
 
 /* =====================================================
-   CORS CONFIGURATION
+CATALOG CACHE
+===================================================== */
+
+let catalogCache = null
+
+async function buildCatalogCache() {
+
+  const collections = await prisma.collection.findMany({
+    where: { isVisible: true },
+    include: {
+      products: {
+        include: {
+          product: {
+            include: {
+              variants: true
+            }
+          }
+        }
+      }
+    }
+  })
+
+  catalogCache = collections.map(c => ({
+    id: c.id,
+    title: c.title,
+    handle: c.handle,
+    products: c.products.map(p => ({
+      id: p.product.id,
+      title: p.product.title,
+      description: p.product.description,
+      image: p.product.imageUrl,
+      tags: p.product.tags ? p.product.tags.split(",") : [],
+      variants: p.product.variants.map(v => ({
+        id: v.id,
+        price: v.priceB2B ?? v.priceBase,
+        stock: v.stock,
+        moq: v.moq
+      }))
+    }))
+  }))
+
+  console.log("CATALOG CACHE BUILT")
+}
+
+/* =====================================================
+PRICING CACHE
+===================================================== */
+
+let variantMap = new Map()
+let tierMap = new Map()
+let packagingMap = new Map()
+let bundleMap = new Map()
+
+async function buildPricingCache() {
+
+  const variants = await prisma.productVariant.findMany()
+
+  variants.forEach(v => {
+    variantMap.set(v.id, v)
+  })
+
+  const tiers = await prisma.variantPriceTier.findMany()
+
+  tiers.forEach(t => {
+    if (!tierMap.has(t.variantId)) {
+      tierMap.set(t.variantId, [])
+    }
+    tierMap.get(t.variantId).push(t)
+  })
+
+  const packaging = await prisma.variantPackaging.findMany()
+
+  packaging.forEach(p => {
+    if (!packagingMap.has(p.variantId)) {
+      packagingMap.set(p.variantId, [])
+    }
+    packagingMap.get(p.variantId).push(p)
+  })
+
+  const bundles = await prisma.productBundle.findMany({
+    include: { items: true }
+  })
+
+  bundles.forEach(b => {
+    bundleMap.set(b.id, b)
+  })
+
+  console.log("PRICING CACHE BUILT")
+}
+
+/* =====================================================
+CORS
 ===================================================== */
 
 const allowedOrigins = [
@@ -26,20 +127,17 @@ const allowedOrigins = [
 
 app.use(
   cors({
-    origin: function (origin, callback) {
+    origin(origin, callback) {
       if (!origin) return callback(null, true)
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true)
-      }
-      console.warn("Blocked by CORS:", origin)
+      if (allowedOrigins.includes(origin)) return callback(null, true)
       return callback(null, false)
     },
-    credentials: true,
+    credentials: true
   })
 )
 
 /* =====================================================
-   HEALTH CHECK
+HEALTH
 ===================================================== */
 
 app.get("/health", async (req, res) => {
@@ -52,149 +150,90 @@ app.get("/health", async (req, res) => {
 })
 
 /* =====================================================
-   INTERNAL CUSTOMER STATUS UPDATE (SECRET PROTECTED)
+SHOPIFY OAUTH (RE-INJECTED)
 ===================================================== */
 
-app.patch("/internal/customer/:id/status", async (req, res) => {
+app.get("/auth/shopify", (req, res) => {
+  const shop = req.query.shop
+
+  if (!shop) {
+    return res.status(400).send("Missing shop parameter")
+  }
+
+  const state = crypto.randomBytes(16).toString("hex")
+
+  const installUrl =
+    `https://${shop}/admin/oauth/authorize` +
+    `?client_id=${process.env.SHOPIFY_CLIENT_ID}` +
+    `&scope=${process.env.SHOPIFY_SCOPES}` +
+    `&redirect_uri=${process.env.SHOPIFY_REDIRECT_URI}` +
+    `&state=${state}`
+
+  return res.redirect(installUrl)
+})
+
+app.get("/auth/shopify/callback", async (req, res) => {
+  const { shop, code } = req.query
+
+  if (!shop || !code) {
+    return res.status(400).send("Missing shop or code")
+  }
+
   try {
-    const secret = req.headers["x-internal-secret"]
+    const response = await fetch(
+      `https://${shop}/admin/oauth/access_token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: process.env.SHOPIFY_CLIENT_ID,
+          client_secret: process.env.SHOPIFY_CLIENT_SECRET,
+          code,
+        }),
+      }
+    )
 
-    if (secret !== process.env.INTERNAL_SYNC_SECRET) {
-      return res.status(403).json({ error: "Unauthorized" })
+    const data = await response.json()
+
+    if (!data.access_token) {
+      return res.status(500).send("OAuth token exchange failed")
     }
 
-    const { id } = req.params
-    const { status } = req.body
+    console.log("NEW TOKEN SCOPES:", data.scope)
 
-    const allowedStatuses = ["PENDING", "APPROVED", "REJECTED", "SUSPENDED"]
-
-    if (!allowedStatuses.includes(status)) {
-      return res.status(400).json({ error: "Invalid status" })
-    }
-
-    const customer = await prisma.customer.findUnique({
-      where: { id }
+    await prisma.shop.upsert({
+      where: { shop },
+      update: {
+        accessToken: data.access_token,
+        scope: data.scope,
+        isApproved: true
+      },
+      create: {
+        shop,
+        accessToken: data.access_token,
+        scope: data.scope,
+        isApproved: true
+      },
     })
 
-    if (!customer) {
-      return res.status(404).json({ error: "Customer not found" })
-    }
-
-    await prisma.customer.update({
-      where: { id },
-      data: { status }
-    })
-
-    return res.json({ message: "Status updated" })
+    return res.send("Shopify OAuth success & token stored")
 
   } catch (error) {
-    console.error("STATUS UPDATE ERROR:", error)
-    return res.status(500).json({ error: "Server error" })
+    console.error(error)
+    return res.status(500).send("OAuth failed")
   }
 })
 
 /* =====================================================
-   ADMIN CUSTOMER MANAGEMENT (TEMP UNPROTECTED)
+AUTH - REQUEST OTP
 ===================================================== */
-
-app.get("/admin/customers", async (req, res) => {
-  try {
-    const customers = await prisma.customer.findMany({
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        phone: true,
-        name: true,
-        email: true,
-        status: true,
-        createdAt: true
-      }
-    })
-
-    return res.json({ success: true, data: customers })
-
-  } catch (error) {
-    console.error("ADMIN LIST ERROR:", error)
-    return res.status(500).json({ error: "Server error" })
-  }
-})
-
-app.patch("/admin/customers/:id/status", async (req, res) => {
-  try {
-    const { id } = req.params
-    const { status } = req.body
-
-    const allowedStatuses = ["PENDING", "APPROVED", "REJECTED", "SUSPENDED"]
-
-    if (!allowedStatuses.includes(status)) {
-      return res.status(400).json({ error: "Invalid status" })
-    }
-
-    const customer = await prisma.customer.findUnique({
-      where: { id }
-    })
-
-    if (!customer) {
-      return res.status(404).json({ error: "Customer not found" })
-    }
-
-    await prisma.customer.update({
-      where: { id },
-      data: { status }
-    })
-
-    return res.json({ message: "Status updated" })
-
-  } catch (error) {
-    console.error("ADMIN STATUS ERROR:", error)
-    return res.status(500).json({ error: "Server error" })
-  }
-})
-
-/* =====================================================
-   AUTH SYSTEM
-===================================================== */
-
-app.post("/auth/register", async (req, res) => {
-  try {
-    const { phone, firstName, lastName, email } = req.body
-
-    if (!phone || !firstName || !lastName) {
-      return res.status(400).json({ error: "Missing required fields" })
-    }
-
-    const existing = await prisma.customer.findUnique({
-      where: { phone }
-    })
-
-    if (existing) {
-      return res.status(409).json({ error: "ALREADY_EXISTS" })
-    }
-
-    await prisma.customer.create({
-      data: {
-        phone,
-        firstName,
-        lastName,
-        email,
-        status: "PENDING"
-      }
-    })
-
-    return res.json({ message: "Registration submitted" })
-
-  } catch (error) {
-    console.error("REGISTER ERROR:", error)
-    return res.status(500).json({ error: "Server error" })
-  }
-})
 
 app.post("/auth/request-otp", async (req, res) => {
   try {
     const { phone } = req.body
 
     if (!phone) {
-      return res.status(400).json({ error: "Phone is required" })
+      return res.status(400).json({ error: "phone required" })
     }
 
     const customer = await prisma.customer.findUnique({
@@ -202,126 +241,193 @@ app.post("/auth/request-otp", async (req, res) => {
     })
 
     if (!customer) {
-      return res.status(404).json({ error: "NOT_REGISTERED" })
+      return res.status(404).json({ error: "customer not found" })
     }
 
-    if (customer.status === "PENDING") {
-      return res.status(403).json({ error: "PENDING_APPROVAL" })
-    }
-
-    if (customer.status === "REJECTED") {
-      return res.status(403).json({ error: "REJECTED" })
-    }
-
-    if (customer.status === "SUSPENDED") {
-      return res.status(403).json({ error: "SUSPENDED" })
-    }
-
-    const otp = crypto.randomInt(100000, 999999).toString()
-    const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex")
+    const otp = Math.floor(100000 + Math.random() * 900000).toString()
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
-
-    await prisma.otpCode.deleteMany({
-      where: { customerId: customer.id }
-    })
 
     await prisma.otpCode.create({
       data: {
         customerId: customer.id,
-        code: hashedOtp,
+        code: otp,
         expiresAt
       }
     })
 
-    console.log("DEV OTP:", otp)
+    console.log("OTP CODE:", otp)
 
-    return res.json({ message: "OTP sent" })
+    res.json({ success: true })
 
   } catch (error) {
-    console.error("OTP ERROR:", error)
-    return res.status(500).json({ error: "Server error" })
+    console.error("OTP REQUEST ERROR:", error)
+    res.status(500).json({ error: "OTP generation failed" })
   }
 })
 
+/* =====================================================
+AUTH - VERIFY OTP
+===================================================== */
+
 app.post("/auth/verify-otp", async (req, res) => {
   try {
-    const { phone, otp } = req.body
-
-    if (!phone || !otp) {
-      return res.status(400).json({ error: "Phone and OTP required" })
-    }
+    const { phone, code } = req.body
 
     const customer = await prisma.customer.findUnique({
       where: { phone }
     })
 
-    if (!customer || customer.status !== "APPROVED") {
-      return res.status(403).json({ error: "NOT_AUTHORIZED" })
+    if (!customer) {
+      return res.status(404).json({ error: "customer not found" })
     }
 
-    const otpRecord = await prisma.otpCode.findFirst({
-      where: { customerId: customer.id }
+    const otp = await prisma.otpCode.findFirst({
+      where: { customerId: customer.id, code },
+      orderBy: { createdAt: "desc" }
     })
 
-    if (!otpRecord || otpRecord.expiresAt < new Date()) {
-      return res.status(400).json({ error: "OTP invalid or expired" })
+    if (!otp) {
+      return res.status(401).json({ error: "invalid code" })
     }
 
-    const hashedInput = crypto.createHash("sha256").update(otp).digest("hex")
-
-    if (hashedInput !== otpRecord.code) {
-      return res.status(400).json({ error: "Invalid OTP" })
+    if (otp.expiresAt < new Date()) {
+      return res.status(401).json({ error: "OTP expired" })
     }
 
-    await prisma.otpCode.deleteMany({
-      where: { customerId: customer.id }
-    })
+    const sessionId = crypto.randomUUID()
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
 
-    const now = new Date()
-
-    const expiresAt = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
-    const absoluteExpiresAt = new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000)
-
-    const newSession = await prisma.customerSession.create({
+    await prisma.customerSession.create({
       data: {
+        id: sessionId,
         customerId: customer.id,
-        deviceHash: crypto.randomBytes(32).toString("hex"),
+        deviceHash: crypto.randomUUID(),
         expiresAt,
-        absoluteExpiresAt
+        absoluteExpiresAt: expiresAt
       }
     })
 
-    res.cookie("session_id", newSession.id, {
+    res.cookie("winwin_session", sessionId, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 90 * 24 * 60 * 60 * 1000
+      sameSite: "lax"
     })
 
-    return res.json({ message: "Authenticated" })
+    res.json({ success: true })
 
   } catch (error) {
-    console.error("VERIFY ERROR:", error)
-    return res.status(500).json({ error: "Server error" })
+    console.error("OTP VERIFY ERROR:", error)
+    res.status(500).json({ error: "OTP verify failed" })
   }
 })
 
-app.post("/auth/logout", requireAuth, async (req, res) => {
-  await prisma.customerSession.update({
-    where: { id: req.session.id },
-    data: { isActive: false }
-  })
+/* =====================================================
+AUTH SESSION
+===================================================== */
 
-  res.clearCookie("session_id")
-  res.json({ message: "Logout successful" })
+app.get("/auth/session", async (req, res) => {
+  try {
+    const sessionId = req.cookies.winwin_session
+
+    if (!sessionId) {
+      return res.json({ authenticated: false })
+    }
+
+    const session = await prisma.customerSession.findUnique({
+      where: { id: sessionId }
+    })
+
+    if (!session || !session.isActive) {
+      return res.json({ authenticated: false })
+    }
+
+    res.json({ authenticated: true })
+
+  } catch (error) {
+    console.error("SESSION ERROR:", error)
+    res.status(500).json({ error: "session error" })
+  }
 })
 
-app.get("/api/me", requireAuth, (req, res) => {
-  res.json({ customer: req.customer })
+/* =====================================================
+CART ROUTES
+===================================================== */
+
+app.post("/api/cart/add", requireAuth, async (req, res) => {
+  try {
+    const { variantId, quantity } = req.body
+
+    const cart = await addItem(
+      req.customer.id,
+      variantId,
+      quantity,
+      { variantMap, tierMap, packagingMap, bundleMap }
+    )
+
+    res.json({ success: true, cart })
+
+  } catch (error) {
+
+    console.error("CART ADD ERROR:", error)
+
+    if (error.message === "INSUFFICIENT_STOCK") {
+      return res.status(400).json({ error: "Stock insuffisant" })
+    }
+
+    if (error.message === "MOQ_NOT_RESPECTED") {
+      return res.status(400).json({ error: "MOQ non respecté" })
+    }
+
+    return res.status(500).json({ error: "add to cart failed" })
+  }
 })
+
+/* =====================================================
+CHECKOUT
+===================================================== */
+
+app.post("/api/cart/checkout", requireAuth, async (req, res) => {
+  try {
+
+    const cart = await getCart(
+      req.customer.id,
+      { variantMap, tierMap, packagingMap, bundleMap }
+    )
+
+    await syncShopifyCustomer(req.customer)
+
+    const draft = await createDraftOrder(
+      req.customer,
+      cart,
+      { variantMap, tierMap, packagingMap, bundleMap }
+    )
+
+    res.json({
+      success: true,
+      draftOrderId: draft.id,
+      invoiceUrl: draft.invoice_url
+    })
+
+  } catch (error) {
+
+    console.error("CHECKOUT ERROR:", error)
+
+    if (error.message === "CUSTOMER_NOT_APPROVED") {
+      return res.status(403).json({ error: "Client non approuvé" })
+    }
+
+    res.status(500).json({ error: "checkout failed" })
+  }
+})
+
+/* =====================================================
+SERVER
+===================================================== */
 
 const PORT = process.env.PORT || 4000
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Backend running on port ${PORT}`)
+  await buildCatalogCache()
+  await buildPricingCache()
 })
