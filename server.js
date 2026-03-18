@@ -150,7 +150,7 @@ app.get("/health", async (req, res) => {
 })
 
 /* =====================================================
-SHOPIFY OAUTH (RE-INJECTED)
+SHOPIFY OAUTH
 ===================================================== */
 
 app.get("/auth/shopify", (req, res) => {
@@ -421,16 +421,9 @@ app.post("/api/cart/checkout", requireAuth, async (req, res) => {
 })
 
 /* =====================================================
-SERVER
+SYNC PRODUCTS (CORRIGÉ POSITION)
 ===================================================== */
 
-const PORT = process.env.PORT || 4000
-
-app.listen(PORT, async () => {
-  console.log(`Backend running on port ${PORT}`)
-  await buildCatalogCache()
-  await buildPricingCache()
-})
 app.get("/internal/sync-products", async (req, res) => {
   try {
     const shop = req.query.shop;
@@ -469,4 +462,16 @@ app.get("/internal/sync-products", async (req, res) => {
     console.error(error);
     res.status(500).json({ error: "Internal error" });
   }
-});
+})
+
+/* =====================================================
+SERVER
+===================================================== */
+
+const PORT = process.env.PORT || 4000
+
+app.listen(PORT, async () => {
+  console.log(`Backend running on port ${PORT}`)
+  await buildCatalogCache()
+  await buildPricingCache()
+})
