@@ -431,3 +431,42 @@ app.listen(PORT, async () => {
   await buildCatalogCache()
   await buildPricingCache()
 })
+app.get("/internal/sync-products", async (req, res) => {
+  try {
+    const shop = req.query.shop;
+
+    if (!shop) {
+      return res.status(400).json({ error: "Missing shop" });
+    }
+
+    const shopData = await prisma.shop.findUnique({
+      where: { shop }
+    });
+
+    if (!shopData) {
+      return res.status(404).json({ error: "Shop not found" });
+    }
+
+    if (!shopData.accessToken) {
+      return res.status(400).json({ error: "No access token" });
+    }
+
+    const response = await fetch(
+      `https://${shop}/admin/api/2026-01/products.json`,
+      {
+        headers: {
+          "X-Shopify-Access-Token": shopData.accessToken,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    const data = await response.json();
+
+    res.json(data);
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Internal error" });
+  }
+});
