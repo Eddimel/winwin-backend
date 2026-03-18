@@ -436,16 +436,12 @@ app.get("/internal/sync-products", async (req, res) => {
       where: { shop }
     });
 
-    if (!shopData) {
-      return res.status(404).json({ error: "Shop not found" });
-    }
-
-    if (!shopData.accessToken) {
-      return res.status(400).json({ error: "No access token" });
+    if (!shopData || !shopData.accessToken) {
+      return res.status(400).json({ error: "Shop not ready" });
     }
 
     const response = await fetch(
-      `https://${shop}/admin/api/2026-01/products.json`,
+      `https://${shop}/admin/api/2026-01/products.json?limit=250`,
       {
         headers: {
           "X-Shopify-Access-Token": shopData.accessToken,
@@ -456,13 +452,80 @@ app.get("/internal/sync-products", async (req, res) => {
 
     const data = await response.json();
 
-    res.json(data);
+    if (!data.products) {
+      return res.status(500).json({ error: "Invalid Shopify response" });
+    }
+
+    let created = 0;
+    let updated = 0;
+
+    for (const product of data.products) {
+
+      // =========================
+      // PRODUCT UPSERT
+      // =========================
+
+      const dbProduct = await prisma.product.upsert({
+        where: { shopifyId: product.id.toString() },
+        update: {
+          title: product.title,
+          description: product.body_html || "",
+          imageUrl: product.image?.src || null,
+          tags: product.tags || ""
+        },
+        create: {
+          shopifyId: product.id.toString(),
+          title: product.title,
+          description: product.body_html || "",
+          imageUrl: product.image?.src || null,
+          tags: product.tags || ""
+        }
+      });
+
+      if (dbProduct.createdAt === dbProduct.updatedAt) {
+        created++;
+      } else {
+        updated++;
+      }
+
+      // =========================
+      // VARIANTS UPSERT
+      // =========================
+
+      for (const variant of product.variants) {
+
+        await prisma.productVariant.upsert({
+          where: { shopifyId: variant.id.toString() },
+          update: {
+            priceBase: parseFloat(variant.price),
+            stock: variant.inventory_quantity ?? 0,
+            sku: variant.sku || null
+          },
+          create: {
+            shopifyId: variant.id.toString(),
+            productId: dbProduct.id,
+            priceBase: parseFloat(variant.price),
+            stock: variant.inventory_quantity ?? 0,
+            sku: variant.sku || null,
+            moq: 1
+          }
+        });
+
+      }
+    }
+
+    return res.json({
+      success: true,
+      created,
+      updated,
+      total: data.products.length
+    });
 
   } catch (error) {
-    console.error(error);
+    console.error("SYNC ERROR:", error);
     res.status(500).json({ error: "Internal error" });
   }
-})
+});
 
 /* =====================================================
 SERVER
