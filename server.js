@@ -421,23 +421,23 @@ app.post("/api/cart/checkout", requireAuth, async (req, res) => {
 })
 
 /* =====================================================
-SYNC PRODUCTS (CORRIGÉ POSITION)
+SYNC PRODUCTS (FIXED)
 ===================================================== */
 
 app.get("/internal/sync-products", async (req, res) => {
   try {
-    const shop = req.query.shop;
+    const shop = req.query.shop
 
     if (!shop) {
-      return res.status(400).json({ error: "Missing shop" });
+      return res.status(400).json({ error: "Missing shop" })
     }
 
     const shopData = await prisma.shop.findUnique({
       where: { shop }
-    });
+    })
 
     if (!shopData || !shopData.accessToken) {
-      return res.status(400).json({ error: "Shop not ready" });
+      return res.status(400).json({ error: "Shop not ready" })
     }
 
     const response = await fetch(
@@ -448,25 +448,21 @@ app.get("/internal/sync-products", async (req, res) => {
           "Content-Type": "application/json"
         }
       }
-    );
+    )
 
-    const data = await response.json();
+    const data = await response.json()
 
     if (!data.products) {
-      return res.status(500).json({ error: "Invalid Shopify response" });
+      return res.status(500).json({ error: "Invalid Shopify response" })
     }
 
-    let created = 0;
-    let updated = 0;
+    let created = 0
+    let updated = 0
 
     for (const product of data.products) {
 
-      // =========================
-      // PRODUCT UPSERT
-      // =========================
-
       const dbProduct = await prisma.product.upsert({
-        where: { shopifyId: product.id.toString() },
+        where: { shopifyProductId: product.id.toString() },
         update: {
           title: product.title,
           description: product.body_html || "",
@@ -474,42 +470,38 @@ app.get("/internal/sync-products", async (req, res) => {
           tags: product.tags || ""
         },
         create: {
-          shopifyId: product.id.toString(),
+          shopifyProductId: product.id.toString(),
           title: product.title,
           description: product.body_html || "",
           imageUrl: product.image?.src || null,
           tags: product.tags || ""
         }
-      });
+      })
 
-      if (dbProduct.createdAt === dbProduct.updatedAt) {
-        created++;
+      if (dbProduct.createdAt.getTime() === dbProduct.updatedAt.getTime()) {
+        created++
       } else {
-        updated++;
+        updated++
       }
-
-      // =========================
-      // VARIANTS UPSERT
-      // =========================
 
       for (const variant of product.variants) {
 
         await prisma.productVariant.upsert({
-          where: { shopifyId: variant.id.toString() },
+          where: { shopifyVariantId: variant.id.toString() },
           update: {
             priceBase: parseFloat(variant.price),
             stock: variant.inventory_quantity ?? 0,
             sku: variant.sku || null
           },
           create: {
-            shopifyId: variant.id.toString(),
+            shopifyVariantId: variant.id.toString(),
             productId: dbProduct.id,
             priceBase: parseFloat(variant.price),
             stock: variant.inventory_quantity ?? 0,
             sku: variant.sku || null,
             moq: 1
           }
-        });
+        })
 
       }
     }
@@ -519,13 +511,13 @@ app.get("/internal/sync-products", async (req, res) => {
       created,
       updated,
       total: data.products.length
-    });
+    })
 
   } catch (error) {
-    console.error("SYNC ERROR:", error);
-    res.status(500).json({ error: "Internal error" });
+    console.error("SYNC ERROR:", error)
+    res.status(500).json({ error: "Internal error" })
   }
-});
+})
 
 /* =====================================================
 SERVER
