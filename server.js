@@ -556,7 +556,7 @@ app.post("/webhooks/products", async (req, res) => {
 
     console.log("WEBHOOK RECEIVED FROM:", shop)
 
-    fetch(`https://${process.env.DOMAIN}/internal/sync-products?shop=${shop}`)
+    fetch(`${process.env.SHOPIFY_APP_URL}/internal/sync-products?shop=${shop}`)
       .catch(err => console.error("Webhook sync error:", err))
 
     return res.status(200).send("OK")
