@@ -591,7 +591,7 @@ app.post(
         return res.status(401).send("Invalid signature")
       }
 
-      console.log("WEBHOOK VERIFIED FROM:", shop)
+      console.log("WEBHOOK VERIFIED FROM:", shop, "ID:", webhookId)
 
       // 🔒 ANTI REPLAY (IDEMPOTENCY)
 
