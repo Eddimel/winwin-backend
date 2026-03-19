@@ -22,7 +22,11 @@ dotenv.config()
 
 const app = express()
 
-app.use(express.json())
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf
+  }
+}))
 app.use(cookieParser())
 
 /* =====================================================
@@ -556,13 +560,13 @@ app.post("/webhooks/products", async (req, res) => {
     }
 
     // 🔐 RAW BODY STRING
-    const rawBody = JSON.stringify(req.body)
+    const rawBody = req.rawBody
 
     // 🔐 GENERATE HMAC
     const generatedHash = crypto
-      .createHmac("sha256", process.env.SHOPIFY_CLIENT_SECRET)
-      .update(rawBody, "utf8")
-      .digest("base64")
+    .createHmac("sha256", process.env.SHOPIFY_CLIENT_SECRET)
+    .update(rawBody)
+    .digest("base64")
 
     // 🔐 COMPARE
     if (generatedHash !== hmacHeader) {
