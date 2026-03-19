@@ -22,11 +22,12 @@ dotenv.config()
 
 const app = express()
 
-app.use(express.json({
-  verify: (req, res, buf) => {
-    req.rawBody = buf
+app.use((req, res, next) => {
+  if (req.originalUrl === "/webhooks/products") {
+    return next()
   }
-}))
+  express.json()(req, res, next)
+})
 app.use(cookieParser())
 
 /* =====================================================
