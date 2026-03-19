@@ -542,20 +542,37 @@ app.get(
 })
 
 /* =====================================================
-SHOPIFY WEBHOOK — AUTO SYNC
+SHOPIFY WEBHOOK — SECURED AUTO SYNC
 ===================================================== */
 
 app.post("/webhooks/products", async (req, res) => {
   try {
 
+    const hmacHeader = req.headers["x-shopify-hmac-sha256"]
     const shop = req.headers["x-shopify-shop-domain"]
 
-    if (!shop) {
-      return res.status(400).send("Missing shop")
+    if (!hmacHeader || !shop) {
+      return res.status(401).send("Unauthorized")
     }
 
-    console.log("WEBHOOK RECEIVED FROM:", shop)
+    // 🔐 RAW BODY STRING
+    const rawBody = JSON.stringify(req.body)
 
+    // 🔐 GENERATE HMAC
+    const generatedHash = crypto
+      .createHmac("sha256", process.env.SHOPIFY_CLIENT_SECRET)
+      .update(rawBody, "utf8")
+      .digest("base64")
+
+    // 🔐 COMPARE
+    if (generatedHash !== hmacHeader) {
+      console.error("INVALID HMAC")
+      return res.status(401).send("Invalid signature")
+    }
+
+    console.log("WEBHOOK VERIFIED FROM:", shop)
+
+    // 🔥 SYNC BACKGROUND
     fetch(`${process.env.SHOPIFY_APP_URL}/internal/sync-products?shop=${shop}`)
       .catch(err => console.error("Webhook sync error:", err))
 
