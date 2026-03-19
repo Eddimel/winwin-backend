@@ -1,0 +1,4 @@
+services/shopifyCustomerService.js:  const response = await fetch(
+services/shopifyService.js:  const response = await fetch(
+server.js:    const response = await fetch(
+server.js:      const response = await fetch(nextUrl, {

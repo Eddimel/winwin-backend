@@ -1,4 +1,5 @@
 import fetch from "node-fetch"
+import { fetchWithRetry } from "./fetchWithRetry.js"
 import { prisma } from "../lib/prisma.js"
 
 export async function syncShopifyCustomer(customer) {
@@ -26,7 +27,7 @@ export async function syncShopifyCustomer(customer) {
     }
   }
 
-  const response = await fetch(
+  const response = await fetchWithRetry(
     `https://${shop.shop}/admin/api/2026-01/customers.json`,
     {
       method: "POST",

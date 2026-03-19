@@ -4,6 +4,7 @@ import cors from "cors"
 import cookieParser from "cookie-parser"
 import crypto from "crypto"
 import fetch from "node-fetch"
+import { fetchWithRetry } from "./services/fetchWithRetry.js"
 import { createDraftOrder } from "./services/shopifyService.js"
 import { syncShopifyCustomer } from "./services/shopifyCustomerService.js"
 
@@ -424,7 +425,10 @@ app.post("/api/cart/checkout", requireAuth, async (req, res) => {
 SYNC PRODUCTS (PAGINATION FIXED)
 ===================================================== */
 
-app.get("/internal/sync-products", async (req, res) => {
+app.get(
+  "/internal/sync-products",
+  process.env.NODE_ENV === "production" ? requireShopifyAdmin : (req, res, next) => next(),
+  async (req, res) => {
   try {
 
     const shop = req.query.shop
@@ -448,7 +452,7 @@ app.get("/internal/sync-products", async (req, res) => {
 
     while (nextUrl) {
 
-      const response = await fetch(nextUrl, {
+      const response = await fetchWithRetry(nextUrl, {
         headers: {
           "X-Shopify-Access-Token": shopData.accessToken,
           "Content-Type": "application/json"
@@ -520,7 +524,11 @@ app.get("/internal/sync-products", async (req, res) => {
       }
     }
 
-    return res.json({
+      // 🔥 REBUILD CACHE AFTER SYNC
+      await buildCatalogCache()
+      await buildPricingCache()
+      
+      return res.json({
       success: true,
       created,
       updated,
@@ -541,6 +549,7 @@ const PORT = process.env.PORT || 4000
 
 app.listen(PORT, async () => {
   console.log(`Backend running on port ${PORT}`)
+  console.log("NODE_ENV:", process.env.NODE_ENV)
   await buildCatalogCache()
   await buildPricingCache()
 })

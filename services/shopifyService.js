@@ -5,6 +5,7 @@ MASTER v8 FIXED
 */
 
 import fetch from "node-fetch"
+import { fetchWithRetry } from "./fetchWithRetry.js"
 import { prisma } from "../lib/prisma.js"
 
 export async function createDraftOrder(customer, cart, pricingMaps) {
@@ -62,7 +63,7 @@ export async function createDraftOrder(customer, cart, pricingMaps) {
     }
   }
 
-  const response = await fetch(
+  const response = await fetchWithRetry(
     `https://${shop.shop}/admin/api/2026-01/draft_orders.json`,
     {
       method: "POST",
