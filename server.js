@@ -427,6 +427,97 @@ app.post("/api/cart/checkout", requireAuth, async (req, res) => {
 })
 
 /* =====================================================
+SYNC SINGLE PRODUCT
+===================================================== */
+
+app.get(
+  "/internal/sync-product",
+  process.env.NODE_ENV === "production"
+    ? requireShopifyAdmin
+    : (req, res, next) => next(),
+  async (req, res) => {
+  try {
+
+    const { shop, productId } = req.query
+
+    if (!shop || !productId) {
+      return res.status(400).json({ error: "Missing params" })
+    }
+
+    const shopData = await prisma.shop.findUnique({
+      where: { shop }
+    })
+
+    if (!shopData || !shopData.accessToken) {
+      return res.status(400).json({ error: "Shop not ready" })
+    }
+
+    const response = await fetchWithRetry(
+      `https://${shop}/admin/api/2026-01/products/${productId}.json`,
+      {
+        headers: {
+          "X-Shopify-Access-Token": shopData.accessToken,
+          "Content-Type": "application/json"
+        }
+      }
+    )
+
+    const data = await response.json()
+
+    if (!data.product) {
+      return res.status(500).json({ error: "Invalid Shopify response" })
+    }
+
+    const product = data.product
+
+    const dbProduct = await prisma.product.upsert({
+      where: { shopifyProductId: product.id.toString() },
+      update: {
+        title: product.title,
+        description: product.body_html || "",
+        imageUrl: product.image?.src || null,
+        tags: product.tags || ""
+      },
+      create: {
+        shopifyProductId: product.id.toString(),
+        title: product.title,
+        description: product.body_html || "",
+        imageUrl: product.image?.src || null,
+        tags: product.tags || ""
+      }
+    })
+
+    for (const variant of product.variants) {
+      await prisma.productVariant.upsert({
+        where: { shopifyVariantId: variant.id.toString() },
+        update: {
+          priceBase: parseFloat(variant.price),
+          stock: variant.inventory_quantity ?? 0,
+          sku: variant.sku || null
+        },
+        create: {
+          shopifyVariantId: variant.id.toString(),
+          productId: dbProduct.id,
+          priceBase: parseFloat(variant.price),
+          stock: variant.inventory_quantity ?? 0,
+          sku: variant.sku || null,
+          moq: 1
+        }
+      })
+    }
+
+    await buildCatalogCache()
+    await buildPricingCache()
+
+    return res.json({ success: true })
+
+  } catch (error) {
+    console.error("SYNC SINGLE ERROR:", error)
+    res.status(500).json({ error: "Internal error" })
+  }
+})
+
+/* =====================================================
 SYNC PRODUCTS (PAGINATION FIXED)
 ===================================================== */
 
@@ -544,10 +635,10 @@ app.get(
     console.error("SYNC ERROR:", error)
     res.status(500).json({ error: "Internal error" })
   }
-})
-
+  }
+)
 /* =====================================================
-SHOPIFY WEBHOOK — SECURED (SHOPIFY 2026 + ANTI REPLAY)
+SHOPIFY WEBHOOK — SECURED (SHOPIFY 2026 + ANTI REPLAY + ASYNC)
 ===================================================== */
 
 app.post(
@@ -593,8 +684,7 @@ app.post(
 
       console.log("WEBHOOK VERIFIED FROM:", shop, "ID:", webhookId)
 
-      // 🔒 ANTI REPLAY (IDEMPOTENCY)
-
+      // 🔒 ANTI REPLAY (CHECK ONLY — STILL SYNC)
       const existing = await prisma.webhookEvent.findUnique({
         where: { id: webhookId }
       })
@@ -604,19 +694,30 @@ app.post(
         return res.status(200).send("Already processed")
       }
 
-      await prisma.webhookEvent.create({
+      // 🔥 PARSE WEBHOOK BODY
+      const body = JSON.parse(rawBody.toString("utf8"))
+      const productId = body.id
+
+      // ✅ RESPONSE IMMÉDIATE (CRITIQUE SHOPIFY)
+      res.status(200).send("OK")
+
+      // 🔒 ANTI REPLAY WRITE (ASYNC)
+      prisma.webhookEvent.create({
         data: {
           id: webhookId,
           topic: topic || "unknown",
           shop
         }
-      })
+      }).catch(err => console.error("WEBHOOK DB ERROR:", err))
 
-      // 🔥 SYNC BACKGROUND (NON BLOQUANT)
-      fetch(`${process.env.SHOPIFY_APP_URL}/internal/sync-products?shop=${shop}`)
+      if (!productId) {
+        console.error("NO PRODUCT ID IN WEBHOOK")
+        return
+      }
+
+      // 🔥 SYNC ONLY THIS PRODUCT (ASYNC)
+      fetch(`${process.env.SHOPIFY_APP_URL}/internal/sync-product?shop=${shop}&productId=${productId}`)
         .catch(err => console.error("Webhook sync error:", err))
-
-      return res.status(200).send("OK")
 
     } catch (error) {
       console.error("WEBHOOK ERROR:", error)
