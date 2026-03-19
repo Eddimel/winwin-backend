@@ -549,7 +549,10 @@ app.get(
 SHOPIFY WEBHOOK — SECURED AUTO SYNC
 ===================================================== */
 
-app.post("/webhooks/products", async (req, res) => {
+app.post(
+  "/webhooks/products",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
   try {
 
     const hmacHeader = req.headers["x-shopify-hmac-sha256"]
@@ -560,7 +563,7 @@ app.post("/webhooks/products", async (req, res) => {
     }
 
     // 🔐 RAW BODY STRING
-    const rawBody = req.rawBody
+    const rawBody = req.body
 
     // 🔐 GENERATE HMAC
     const generatedHash = crypto
