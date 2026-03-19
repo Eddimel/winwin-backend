@@ -547,57 +547,63 @@ app.get(
 })
 
 /* =====================================================
-SHOPIFY WEBHOOK — DEBUG HMAC
+SHOPIFY WEBHOOK — SECURED (SHOPIFY 2026)
 ===================================================== */
 
 app.post(
   "/webhooks/products",
   express.raw({ type: "application/json" }),
   async (req, res) => {
-  try {
+    try {
 
-    const hmacHeader = req.headers["x-shopify-hmac-sha256"]
-    const shop = req.headers["x-shopify-shop-domain"]
+      const hmacHeader = req.headers["x-shopify-hmac-sha256"]
+      const shop = req.headers["x-shopify-shop-domain"]
 
-    if (!hmacHeader || !shop) {
-      return res.status(401).send("Unauthorized")
+      if (!hmacHeader || !shop) {
+        console.error("MISSING HMAC OR SHOP")
+        return res.status(401).send("Unauthorized")
+      }
+
+      // 🔐 RAW BODY (STRICT BUFFER)
+      const rawBody = req.body
+
+      if (!Buffer.isBuffer(rawBody)) {
+        console.error("RAW BODY NOT BUFFER")
+        return res.status(400).send("Invalid body")
+      }
+
+      // 🔐 GENERATE HMAC (SHOPIFY 2026 SECRET)
+      const generatedHash = crypto
+        .createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET)
+        .update(rawBody)
+        .digest("base64")
+
+      // 🔐 SAFE COMPARE (ANTI TIMING ATTACK)
+      const isValid = crypto.timingSafeEqual(
+        Buffer.from(generatedHash),
+        Buffer.from(hmacHeader)
+      )
+
+      if (!isValid) {
+        console.error("INVALID HMAC")
+        return res.status(401).send("Invalid signature")
+      }
+
+      console.log("WEBHOOK VERIFIED FROM:", shop)
+
+      // 🔥 SYNC BACKGROUND (NON BLOQUANT)
+      fetch(`${process.env.SHOPIFY_APP_URL}/internal/sync-products?shop=${shop}`)
+        .catch(err => console.error("Webhook sync error:", err))
+
+      return res.status(200).send("OK")
+
+    } catch (error) {
+      console.error("WEBHOOK ERROR:", error)
+      return res.status(500).send("Error")
     }
-
-    // 🔐 RAW BODY
-    const rawBody = req.body
-
-    // 🔍 DEBUG
-    console.log("SHOPIFY HMAC:", hmacHeader)
-    console.log("RAW BODY TYPE:", typeof rawBody)
-    console.log("RAW BODY IS BUFFER:", Buffer.isBuffer(rawBody))
-
-    // 🔐 GENERATE HMAC
-    const generatedHash = crypto
-      .createHmac("sha256", process.env.SHOPIFY_CLIENT_SECRET)
-      .update(rawBody)
-      .digest("base64")
-
-    console.log("GENERATED HMAC:", generatedHash)
-
-    // 🔐 COMPARE
-    if (generatedHash !== hmacHeader) {
-      console.error("INVALID HMAC")
-      return res.status(401).send("Invalid signature")
-    }
-
-    console.log("WEBHOOK VERIFIED FROM:", shop)
-
-    // 🔥 SYNC BACKGROUND
-    fetch(`${process.env.SHOPIFY_APP_URL}/internal/sync-products?shop=${shop}`)
-      .catch(err => console.error("Webhook sync error:", err))
-
-    return res.status(200).send("OK")
-
-  } catch (error) {
-    console.error("WEBHOOK ERROR:", error)
-    return res.status(500).send("Error")
   }
-})
+)
+
 /* =====================================================
 SERVER
 ===================================================== */
