@@ -421,11 +421,12 @@ app.post("/api/cart/checkout", requireAuth, async (req, res) => {
 })
 
 /* =====================================================
-SYNC PRODUCTS (FIXED)
+SYNC PRODUCTS (PAGINATION FIXED)
 ===================================================== */
 
 app.get("/internal/sync-products", async (req, res) => {
   try {
+
     const shop = req.query.shop
 
     if (!shop) {
@@ -440,69 +441,82 @@ app.get("/internal/sync-products", async (req, res) => {
       return res.status(400).json({ error: "Shop not ready" })
     }
 
-    const response = await fetch(
-      `https://${shop}/admin/api/2026-01/products.json?limit=250`,
-      {
+    let nextUrl = `https://${shop}/admin/api/2026-01/products.json?status=active&limit=250`
+    let totalFetched = 0
+    let created = 0
+    let updated = 0
+
+    while (nextUrl) {
+
+      const response = await fetch(nextUrl, {
         headers: {
           "X-Shopify-Access-Token": shopData.accessToken,
           "Content-Type": "application/json"
         }
-      }
-    )
-
-    const data = await response.json()
-
-    if (!data.products) {
-      return res.status(500).json({ error: "Invalid Shopify response" })
-    }
-
-    let created = 0
-    let updated = 0
-
-    for (const product of data.products) {
-
-      const dbProduct = await prisma.product.upsert({
-        where: { shopifyProductId: product.id.toString() },
-        update: {
-          title: product.title,
-          description: product.body_html || "",
-          imageUrl: product.image?.src || null,
-          tags: product.tags || ""
-        },
-        create: {
-          shopifyProductId: product.id.toString(),
-          title: product.title,
-          description: product.body_html || "",
-          imageUrl: product.image?.src || null,
-          tags: product.tags || ""
-        }
       })
 
-      if (dbProduct.createdAt.getTime() === dbProduct.updatedAt.getTime()) {
-        created++
-      } else {
-        updated++
+      const data = await response.json()
+
+      if (!data.products) {
+        return res.status(500).json({ error: "Invalid Shopify response" })
       }
 
-      for (const variant of product.variants) {
+      for (const product of data.products) {
 
-        await prisma.productVariant.upsert({
-          where: { shopifyVariantId: variant.id.toString() },
+        const dbProduct = await prisma.product.upsert({
+          where: { shopifyProductId: product.id.toString() },
           update: {
-            priceBase: parseFloat(variant.price),
-            stock: variant.inventory_quantity ?? 0,
-            sku: variant.sku || null
+            title: product.title,
+            description: product.body_html || "",
+            imageUrl: product.image?.src || null,
+            tags: product.tags || ""
           },
           create: {
-            shopifyVariantId: variant.id.toString(),
-            productId: dbProduct.id,
-            priceBase: parseFloat(variant.price),
-            stock: variant.inventory_quantity ?? 0,
-            sku: variant.sku || null,
-            moq: 1
+            shopifyProductId: product.id.toString(),
+            title: product.title,
+            description: product.body_html || "",
+            imageUrl: product.image?.src || null,
+            tags: product.tags || ""
           }
         })
 
+        if (dbProduct.createdAt.getTime() === dbProduct.updatedAt.getTime()) {
+          created++
+        } else {
+          updated++
+        }
+
+        for (const variant of product.variants) {
+
+          await prisma.productVariant.upsert({
+            where: { shopifyVariantId: variant.id.toString() },
+            update: {
+              priceBase: parseFloat(variant.price),
+              stock: variant.inventory_quantity ?? 0,
+              sku: variant.sku || null
+            },
+            create: {
+              shopifyVariantId: variant.id.toString(),
+              productId: dbProduct.id,
+              priceBase: parseFloat(variant.price),
+              stock: variant.inventory_quantity ?? 0,
+              sku: variant.sku || null,
+              moq: 1
+            }
+          })
+
+        }
+      }
+
+      totalFetched += data.products.length
+
+      const linkHeader = response.headers.get("link")
+
+      if (linkHeader && linkHeader.includes('rel="next"')) {
+        const match = linkHeader.match(/<([^>]+)>; rel="next"/)
+        nextUrl = match ? match[1] : null
+      } else {
+        nextUrl = null
       }
     }
 
@@ -510,7 +524,7 @@ app.get("/internal/sync-products", async (req, res) => {
       success: true,
       created,
       updated,
-      total: data.products.length
+      total: totalFetched
     })
 
   } catch (error) {
