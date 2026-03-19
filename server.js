@@ -542,6 +542,32 @@ app.get(
 })
 
 /* =====================================================
+SHOPIFY WEBHOOK — AUTO SYNC
+===================================================== */
+
+app.post("/webhooks/products", async (req, res) => {
+  try {
+
+    const shop = req.headers["x-shopify-shop-domain"]
+
+    if (!shop) {
+      return res.status(400).send("Missing shop")
+    }
+
+    console.log("WEBHOOK RECEIVED FROM:", shop)
+
+    fetch(`https://${process.env.DOMAIN}/internal/sync-products?shop=${shop}`)
+      .catch(err => console.error("Webhook sync error:", err))
+
+    return res.status(200).send("OK")
+
+  } catch (error) {
+    console.error("WEBHOOK ERROR:", error)
+    return res.status(500).send("Error")
+  }
+})
+
+/* =====================================================
 SERVER
 ===================================================== */
 
