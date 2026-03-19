@@ -256,3 +256,9 @@ model ProductCollection {
 
   @@unique([productId, collectionId])
 }
+model WebhookEvent {
+  id        String   @id
+  topic     String
+  shop      String
+  createdAt DateTime @default(now())
+}

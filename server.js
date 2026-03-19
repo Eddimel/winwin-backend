@@ -547,7 +547,7 @@ app.get(
 })
 
 /* =====================================================
-SHOPIFY WEBHOOK — SECURED (SHOPIFY 2026)
+SHOPIFY WEBHOOK — SECURED (SHOPIFY 2026 + ANTI REPLAY)
 ===================================================== */
 
 app.post(
@@ -558,9 +558,11 @@ app.post(
 
       const hmacHeader = req.headers["x-shopify-hmac-sha256"]
       const shop = req.headers["x-shopify-shop-domain"]
+      const webhookId = req.headers["x-shopify-webhook-id"]
+      const topic = req.headers["x-shopify-topic"]
 
-      if (!hmacHeader || !shop) {
-        console.error("MISSING HMAC OR SHOP")
+      if (!hmacHeader || !shop || !webhookId) {
+        console.error("MISSING HMAC OR SHOP OR WEBHOOK ID")
         return res.status(401).send("Unauthorized")
       }
 
@@ -590,6 +592,25 @@ app.post(
       }
 
       console.log("WEBHOOK VERIFIED FROM:", shop)
+
+      // 🔒 ANTI REPLAY (IDEMPOTENCY)
+
+      const existing = await prisma.webhookEvent.findUnique({
+        where: { id: webhookId }
+      })
+
+      if (existing) {
+        console.log("WEBHOOK DUPLICATE IGNORED:", webhookId)
+        return res.status(200).send("Already processed")
+      }
+
+      await prisma.webhookEvent.create({
+        data: {
+          id: webhookId,
+          topic: topic || "unknown",
+          shop
+        }
+      })
 
       // 🔥 SYNC BACKGROUND (NON BLOQUANT)
       fetch(`${process.env.SHOPIFY_APP_URL}/internal/sync-products?shop=${shop}`)
