@@ -547,7 +547,7 @@ app.get(
 })
 
 /* =====================================================
-SHOPIFY WEBHOOK — SECURED AUTO SYNC
+SHOPIFY WEBHOOK — DEBUG HMAC
 ===================================================== */
 
 app.post(
@@ -563,14 +563,21 @@ app.post(
       return res.status(401).send("Unauthorized")
     }
 
-    // 🔐 RAW BODY STRING
+    // 🔐 RAW BODY
     const rawBody = req.body
+
+    // 🔍 DEBUG
+    console.log("SHOPIFY HMAC:", hmacHeader)
+    console.log("RAW BODY TYPE:", typeof rawBody)
+    console.log("RAW BODY IS BUFFER:", Buffer.isBuffer(rawBody))
 
     // 🔐 GENERATE HMAC
     const generatedHash = crypto
-    .createHmac("sha256", process.env.SHOPIFY_CLIENT_SECRET)
-    .update(rawBody)
-    .digest("base64")
+      .createHmac("sha256", process.env.SHOPIFY_CLIENT_SECRET)
+      .update(rawBody)
+      .digest("base64")
+
+    console.log("GENERATED HMAC:", generatedHash)
 
     // 🔐 COMPARE
     if (generatedHash !== hmacHeader) {
@@ -591,7 +598,6 @@ app.post(
     return res.status(500).send("Error")
   }
 })
-
 /* =====================================================
 SERVER
 ===================================================== */
